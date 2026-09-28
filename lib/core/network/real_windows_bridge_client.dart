@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../constants/app_constants.dart';
+import '../errors/app_errors.dart';
 import '../models/models.dart';
 import 'config.dart';
 import 'windows_bridge_client.dart';
@@ -63,6 +65,24 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
   }
 
   @override
+  void configure(BridgeConfig config) {
+    _activeConfig = config;
+  }
+
+  @override
+  Future<bool> checkHealth() async {
+    if (_activeConfig == null) return false;
+    try {
+      final healthUri = Uri.parse('${_activeConfig!.httpBaseUrl}/health');
+      final response = await _httpClient.get(healthUri).timeout(const Duration(seconds: 5));
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('[RealWindowsBridgeClient] Health check failed for ${_activeConfig?.httpBaseUrl}: $e');
+      return false;
+    }
+  }
+
+  @override
   Future<void> connect(BridgeConfig config) async {
     _activeConfig = config;
     _emitState(ConnectionState.connecting);
@@ -70,7 +90,7 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
     try {
       final wsUri = Uri.parse(config.wsBaseUrl);
       _wsChannel = WebSocketChannel.connect(wsUri);
-      await _wsChannel!.ready;
+      await _wsChannel!.ready.timeout(const Duration(seconds: 5));
 
       _wsSubscription = _wsChannel!.stream.listen(
         _handleWebSocketMessage,
@@ -182,50 +202,117 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
   @override
   Future<PairingResponse> pair(String code) async {
     if (_activeConfig == null) {
-      throw BridgeError(
-        code: 'NOT_CONFIGURED',
-        message: 'Bridge configuration not set. Call connect first.',
-        timestamp: DateTime.now(),
+      return PairingResponse(
+        success: false,
+        deviceId: '',
+        failure: BridgeFailure.unreachable,
+        errorMessage: AppErrorMapper.mapFailure(BridgeFailure.unreachable),
+        protocolVersion: AppConstants.protocolVersion,
       );
     }
 
+    // Step 1: Preflight health check (5s timeout)
+    final isHealthy = await checkHealth();
+    if (!isHealthy) {
+      debugPrint(
+        '[RealWindowsBridgeClient] Pre-pair health check failed for ${_activeConfig!.httpBaseUrl}',
+      );
+      return PairingResponse(
+        success: false,
+        deviceId: '',
+        failure: BridgeFailure.unreachable,
+        errorMessage: AppErrorMapper.mapFailure(
+          BridgeFailure.unreachable,
+          host: _activeConfig!.host,
+        ),
+        protocolVersion: _activeConfig!.protocolVersion,
+      );
+    }
+
+    // Step 2: POST /pair (10s timeout)
     final endpoint = Uri.parse('${_activeConfig!.httpBaseUrl}/pair');
     try {
-      final response = await _httpClient.post(
-        endpoint,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Protocol-Version': _activeConfig!.protocolVersion,
-        },
-        body: jsonEncode({
-          'code': code.trim(),
-          'protocolVersion': _activeConfig!.protocolVersion,
-        }),
-      );
+      final response = await _httpClient
+          .post(
+            endpoint,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Protocol-Version': _activeConfig!.protocolVersion,
+            },
+            body: jsonEncode({
+              'code': code.trim(),
+              'protocolVersion': _activeConfig!.protocolVersion,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
         final pairing = PairingResponse.fromJson(body);
         if (pairing.success && pairing.sessionToken != null) {
           _authToken = pairing.sessionToken;
+          return pairing;
+        } else {
+          final failure = _determineFailure(response.statusCode, response.body);
+          return PairingResponse(
+            success: false,
+            deviceId: pairing.deviceId,
+            failure: failure,
+            errorMessage: AppErrorMapper.mapFailure(
+              failure,
+              host: _activeConfig!.host,
+            ),
+            protocolVersion: _activeConfig!.protocolVersion,
+          );
         }
-        return pairing;
       } else {
+        final failure = _determineFailure(response.statusCode, response.body);
         return PairingResponse(
           success: false,
           deviceId: '',
-          errorMessage: 'PAIRING_FAILED: HTTP ${response.statusCode} - ${response.body}',
+          failure: failure,
+          errorMessage: AppErrorMapper.mapFailure(
+            failure,
+            host: _activeConfig!.host,
+          ),
           protocolVersion: _activeConfig!.protocolVersion,
         );
       }
     } catch (e) {
+      debugPrint('[RealWindowsBridgeClient] pair() exception: $e');
+      final failure =
+          (e is TimeoutException || e is SocketException || e is HttpException)
+              ? BridgeFailure.unreachable
+              : BridgeFailure.serverError;
       return PairingResponse(
         success: false,
         deviceId: '',
-        errorMessage: 'NETWORK_ERROR: ${e.toString()}',
-        protocolVersion: _activeConfig?.protocolVersion ?? AppConstants.protocolVersion,
+        failure: failure,
+        errorMessage: AppErrorMapper.mapFailure(
+          failure,
+          host: _activeConfig?.host,
+        ),
+        protocolVersion:
+            _activeConfig?.protocolVersion ?? AppConstants.protocolVersion,
       );
     }
+  }
+
+  BridgeFailure _determineFailure(int statusCode, String responseBody) {
+    final lower = responseBody.toLowerCase();
+    if (statusCode >= 500) {
+      return BridgeFailure.serverError;
+    }
+    if (lower.contains('version') || lower.contains('incompatible')) {
+      return BridgeFailure.versionMismatch;
+    }
+    if (lower.contains('expired')) {
+      return BridgeFailure.expiredPin;
+    }
+    if (lower.contains('unreachable') || lower.contains('not_found')) {
+      return BridgeFailure.unreachable;
+    }
+    return BridgeFailure.wrongPin;
   }
 
   @override
@@ -415,18 +502,28 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
           sink.add(chunk);
         },
         handleError: (error, stackTrace, sink) {
+          debugPrint('[RealWindowsBridgeClient] Upload stream error: $error');
           onProgress(
             TransferProgress(
               transferId: transferId,
               bytesTransferred: bytesSent,
               totalBytes: totalBytes,
               status: TransferStatus.failed,
-              errorMessage: error.toString(),
+              errorMessage: AppErrorMapper.map(error, fallback: AppErrors.uploadFailed),
             ),
           );
           sink.addError(error, stackTrace);
         },
       ),
+    );
+
+    // Idle timeout: resets timer each time a chunk is emitted (not a total-duration cap)
+    final idleProgressStream = progressStream.timeout(
+      const Duration(seconds: 15),
+      onTimeout: (sink) {
+        debugPrint('[RealWindowsBridgeClient] Upload stream idle timeout (15s)');
+        sink.addError(TimeoutException('Upload stalled: connection idle'));
+      },
     );
 
     final request = http.MultipartRequest('POST', uri);
@@ -442,29 +539,51 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
     request.files.add(
       http.MultipartFile(
         field,
-        progressStream,
+        idleProgressStream,
         totalBytes,
         filename: fileName,
       ),
     );
 
-    final streamedResponse = await _httpClient.send(request);
-    if (streamedResponse.statusCode != 200 &&
-        streamedResponse.statusCode != 201) {
-      final responseBody = await streamedResponse.stream.bytesToString();
+    try {
+      final streamedResponse = await _httpClient.send(request).timeout(const Duration(seconds: 15));
+      if (streamedResponse.statusCode != 200 &&
+          streamedResponse.statusCode != 201) {
+        final responseBody = await streamedResponse.stream.bytesToString().timeout(const Duration(seconds: 10));
+        debugPrint('[RealWindowsBridgeClient] Upload rejected HTTP ${streamedResponse.statusCode}: $responseBody');
+        final friendlyMsg = AppErrorMapper.map(responseBody, fallback: AppErrors.uploadFailed);
+        onProgress(
+          TransferProgress(
+            transferId: transferId,
+            bytesTransferred: bytesSent,
+            totalBytes: totalBytes,
+            status: TransferStatus.failed,
+            errorMessage: friendlyMsg,
+          ),
+        );
+        throw BridgeError(
+          code: 'UPLOAD_FAILED',
+          message: friendlyMsg,
+          details: responseBody,
+          timestamp: DateTime.now(),
+        );
+      }
+    } catch (e) {
+      debugPrint('[RealWindowsBridgeClient] Upload exception: $e');
+      final friendlyMsg = AppErrorMapper.map(e, fallback: AppErrors.uploadFailed);
       onProgress(
         TransferProgress(
           transferId: transferId,
           bytesTransferred: bytesSent,
           totalBytes: totalBytes,
           status: TransferStatus.failed,
-          errorMessage: 'HTTP ${streamedResponse.statusCode}: $responseBody',
+          errorMessage: friendlyMsg,
         ),
       );
+      if (e is BridgeError) rethrow;
       throw BridgeError(
         code: 'UPLOAD_FAILED',
-        message: 'Upload failed with status ${streamedResponse.statusCode}',
-        details: responseBody,
+        message: friendlyMsg,
         timestamp: DateTime.now(),
       );
     }

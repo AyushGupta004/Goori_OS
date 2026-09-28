@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../errors/app_errors.dart';
 import '../models/models.dart';
 import '../network/config.dart';
 import '../network/windows_bridge_client.dart';
@@ -36,13 +37,15 @@ class PairingService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      final config = BridgeConfig(
+        host: device.host,
+        port: device.port,
+        mode: mode,
+      );
+      client.configure(config);
+
       // Connect to bridge endpoint if disconnected
       if (!client.currentConnectionState.isConnected) {
-        final config = BridgeConfig(
-          host: device.host,
-          port: device.port,
-          mode: mode,
-        );
         await client.connect(config);
       }
 
@@ -60,17 +63,21 @@ class PairingService extends ChangeNotifier {
         );
         _errorMessage = null;
       } else {
-        _errorMessage = response.errorMessage ?? 'Pairing rejected by host.';
+        _errorMessage = response.errorMessage != null
+            ? AppErrorMapper.map(response.errorMessage, host: device.host)
+            : AppErrorMapper.mapFailure(response.failure ?? BridgeFailure.wrongPin, host: device.host);
       }
 
       _isPairing = false;
       notifyListeners();
       return response;
     } catch (e) {
+      debugPrint('[PairingService] pairDevice exception: $e');
       final errorResponse = PairingResponse(
         success: false,
         deviceId: '',
-        errorMessage: 'Pairing failed: ${e.toString()}',
+        failure: BridgeFailure.unreachable,
+        errorMessage: AppErrorMapper.map(e, host: device.host),
         protocolVersion: '1.0',
       );
       _errorMessage = errorResponse.errorMessage;

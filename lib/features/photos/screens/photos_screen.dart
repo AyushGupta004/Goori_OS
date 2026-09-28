@@ -3,8 +3,11 @@ import 'package:provider/provider.dart';
 
 import '../../../app/theme.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../core/errors/app_errors.dart';
 import '../../../core/models/models.dart';
+import '../../../core/services/connection_service.dart';
 import '../../../core/services/photo_transfer_service.dart';
+import '../../connection/screens/discovery_screen.dart';
 import '../services/image_picker_service.dart';
 
 /// Screen managing photo capture, gallery multi-selection, thumbnail grid preview,
@@ -112,10 +115,11 @@ class _PhotosScreenState extends State<PhotosScreen> {
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
+    final connection = context.watch<ConnectionService>();
+    final isAuthenticated = connection.isAuthenticated;
     final photoService = context.watch<PhotoTransferService>();
     final photos = photoService.photos;
     final isUploading = photoService.isUploading;
-    final hasPendingPhotos = photoService.hasPendingPhotos;
     final hasFinishedPhotos = photos.any((p) => p.isFinished);
 
     return Scaffold(
@@ -160,8 +164,13 @@ class _PhotosScreenState extends State<PhotosScreen> {
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
                 children: [
+                  // 0. Disconnected Strip (if not authenticated)
+                  if (!isAuthenticated) ...[
+                    _buildNotConnectedStrip(palette),
+                  ],
+
                   // 1. Action Row: [Camera] / [Gallery] Buttons
-                  _buildSourceButtons(isUploading, palette),
+                  _buildSourceButtons(isUploading, isAuthenticated, palette),
 
                   const SizedBox(height: 14),
 
@@ -201,7 +210,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                   if (photos.isEmpty)
                     _buildEmptyPhotosCard(palette)
                   else
-                    _buildThumbnailGrid(photos, photoService, palette),
+                    _buildThumbnailGrid(photos, photoService, isAuthenticated, palette),
                 ],
               ),
             ),
@@ -215,7 +224,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
                     top: BorderSide(color: palette.border, width: 1.0),
                   ),
                 ),
-                child: _buildSendToPCButton(hasPendingPhotos, isUploading, photos.length, palette),
+                child: _buildSendToPCButton(photoService, isAuthenticated, isUploading, palette),
               ),
           ],
         ),
@@ -223,8 +232,60 @@ class _PhotosScreenState extends State<PhotosScreen> {
     );
   }
 
+  /// Subtle inline strip showing disconnection status with CONNECT action.
+  Widget _buildNotConnectedStrip(AppPalette palette) {
+    return Container(
+      key: const ValueKey('photos_not_connected_strip'),
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: palette.card,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: palette.border, width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.cloud_off_outlined,
+            size: 18,
+            color: palette.textMuted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Not connected to PC',
+              style: AppTypography.mutedMetadata.copyWith(
+                color: palette.textMuted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          InkWell(
+            key: const ValueKey('photos_connect_btn'),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const DiscoveryScreen(),
+                ),
+              );
+            },
+            child: Text(
+              'CONNECT',
+              style: AppTypography.mutedMetadata.copyWith(
+                color: palette.textPrimary,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// [Camera] and [Gallery] action buttons.
-  Widget _buildSourceButtons(bool isUploading, AppPalette palette) {
+  Widget _buildSourceButtons(bool isUploading, bool isAuthenticated, AppPalette palette) {
+    final canPick = isAuthenticated && !isUploading;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -240,7 +301,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
               Expanded(
                 child: ElevatedButton.icon(
                   key: const ValueKey('camera_btn'),
-                  onPressed: isUploading ? null : _onCameraPressed,
+                  onPressed: canPick ? _onCameraPressed : null,
                   icon: const Icon(Icons.camera_alt_outlined, size: 18),
                   label: const Text('Camera'),
                   style: ElevatedButton.styleFrom(
@@ -255,7 +316,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
               Expanded(
                 child: ElevatedButton.icon(
                   key: const ValueKey('gallery_btn'),
-                  onPressed: isUploading ? null : _onGalleryPressed,
+                  onPressed: canPick ? _onGalleryPressed : null,
                   icon: const Icon(Icons.photo_library_outlined, size: 18),
                   label: const Text('Gallery'),
                   style: ElevatedButton.styleFrom(
@@ -370,6 +431,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   Widget _buildThumbnailGrid(
     List<PhotoTransferItem> photos,
     PhotoTransferService photoService,
+    bool isAuthenticated,
     AppPalette palette,
   ) {
     return GridView.builder(
@@ -384,7 +446,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
       itemCount: photos.length,
       itemBuilder: (context, index) {
         final item = photos[index];
-        return _buildThumbnailCard(item, photoService, palette);
+        return _buildThumbnailCard(item, photoService, isAuthenticated, palette);
       },
     );
   }
@@ -394,6 +456,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
   Widget _buildThumbnailCard(
     PhotoTransferItem item,
     PhotoTransferService photoService,
+    bool isAuthenticated,
     AppPalette palette,
   ) {
     final progress = item.progress;
@@ -420,163 +483,237 @@ class _PhotosScreenState extends State<PhotosScreen> {
       statusColor = palette.textMuted;
     }
 
-    return Container(
-      key: ValueKey('photo_card_${item.id}'),
-      decoration: BoxDecoration(
-        color: palette.card,
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(
-          color: isCompleted
-              ? palette.accentGreen.withValues(alpha: 0.3)
-              : (isFailed
-                  ? palette.errorRed.withValues(alpha: 0.3)
-                  : palette.border),
-          width: 1,
+    return InkWell(
+      key: ValueKey('photo_tile_inkwell_${item.id}'),
+      onTap: (isFailed && isAuthenticated && !isUploading)
+          ? () => photoService.retryPhoto(item.id)
+          : null,
+      child: Container(
+        key: ValueKey('photo_card_${item.id}'),
+        decoration: BoxDecoration(
+          color: palette.card,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: isCompleted
+                ? palette.accentGreen.withValues(alpha: 0.3)
+                : (isFailed
+                    ? palette.errorRed.withValues(alpha: 0.3)
+                    : palette.border),
+            width: 1,
+          ),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 1. Thumbnail Preview with Remove (✕) Affordance
-          Expanded(
-            child: Stack(
-              children: [
-                // Memory-light thumbnail rendering (cacheWidth & cacheHeight: 256)
-                Positioned.fill(
-                  child: ClipRRect(
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
-                    child: Image.file(
-                      item.file,
-                      cacheWidth: 256,
-                      cacheHeight: 256,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) {
-                        return Container(
-                          color: palette.secondary,
-                          child: Center(
-                            child: Icon(
-                              Icons.image_outlined,
-                              size: 32,
-                              color: palette.textMuted.withValues(alpha: 0.6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 1. Thumbnail Preview with Remove (✕) Affordance
+            Expanded(
+              child: Stack(
+                children: [
+                  // Memory-light thumbnail rendering (cacheWidth & cacheHeight: 256)
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(3)),
+                      child: Image.file(
+                        item.file,
+                        cacheWidth: 256,
+                        cacheHeight: 256,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return Container(
+                            color: palette.secondary,
+                            child: Center(
+                              child: Icon(
+                                Icons.image_outlined,
+                                size: 32,
+                                color: palette.textMuted.withValues(alpha: 0.6),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+
+                  // Top-right Remove (✕) Button Affordance
+                  if (!isUploading)
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: InkWell(
+                        key: ValueKey('remove_photo_btn_${item.id}'),
+                        onTap: () => photoService.removePhoto(item.id),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.75),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: palette.border, width: 1),
+                          ),
+                          child: const Icon(
+                            Icons.close,
+                            size: 14,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // Status Overlay on Thumbnail
+                  Positioned(
+                    bottom: 6,
+                    left: 6,
+                    right: 6,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.8),
+                            borderRadius: BorderRadius.circular(2),
+                            border: Border.all(color: statusColor, width: 1),
+                          ),
+                          child: Text(
+                            statusLabel,
+                            key: ValueKey('photo_status_${item.id}'),
+                            style: AppTypography.mutedMetadata.copyWith(
+                              color: statusColor,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-
-                // Top-right Remove (✕) Button Affordance
-                if (!isUploading)
-                  Positioned(
-                    top: 6,
-                    right: 6,
-                    child: InkWell(
-                      key: ValueKey('remove_photo_btn_${item.id}'),
-                      onTap: () => photoService.removePhoto(item.id),
-                      borderRadius: BorderRadius.circular(12),
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.75),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: palette.border, width: 1),
                         ),
-                        child: const Icon(
-                          Icons.close,
-                          size: 14,
-                          color: Colors.white,
-                        ),
-                      ),
+                        if (isFailed)
+                          InkWell(
+                            key: ValueKey('retry_photo_btn_${item.id}'),
+                            onTap: (isAuthenticated && !isUploading)
+                                ? () => photoService.retryPhoto(item.id)
+                                : null,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.8),
+                                borderRadius: BorderRadius.circular(2),
+                                border: Border.all(color: palette.accentGreen, width: 1),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.refresh, size: 10, color: palette.accentGreen),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    'RETRY',
+                                    style: AppTypography.mutedMetadata.copyWith(
+                                      color: palette.accentGreen,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
-
-                // Status Overlay on Thumbnail
-                Positioned(
-                  bottom: 6,
-                  left: 6,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.8),
-                      borderRadius: BorderRadius.circular(2),
-                      border: Border.all(color: statusColor, width: 1),
-                    ),
-                    child: Text(
-                      statusLabel,
-                      key: ValueKey('photo_status_${item.id}'),
-                      style: AppTypography.mutedMetadata.copyWith(
-                        color: statusColor,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // 2. Linear Progress Bar
-          ClipRRect(
-            child: LinearProgressIndicator(
-              key: ValueKey('photo_progress_bar_${item.id}'),
-              value: isCompleted
-                  ? 1.0
-                  : (isWaiting ? 0.0 : progress.fraction),
-              minHeight: 3,
-              backgroundColor: palette.border,
-              valueColor: AlwaysStoppedAnimation<Color>(
-                isCompleted
-                    ? palette.accentGreen
-                    : (isFailed ? palette.errorRed : palette.accentGreen),
+                ],
               ),
             ),
-          ),
 
-          // 3. Filename & Size Caption
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Text(
-                    item.fileName,
-                    key: ValueKey('photo_filename_${item.id}'),
-                    style: AppTypography.monoConsole.copyWith(
-                      fontSize: 10,
-                      color: palette.textPrimary,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+            // 2. Linear Progress Bar
+            ClipRRect(
+              child: LinearProgressIndicator(
+                key: ValueKey('photo_progress_bar_${item.id}'),
+                value: isCompleted
+                    ? 1.0
+                    : (isWaiting ? 0.0 : progress.fraction),
+                minHeight: 3,
+                backgroundColor: palette.border,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  isCompleted
+                      ? palette.accentGreen
+                      : (isFailed ? palette.errorRed : palette.accentGreen),
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  item.formattedTotalSize,
-                  style: AppTypography.monoConsole.copyWith(
-                    fontSize: 9,
-                    color: palette.textMuted,
-                  ),
-                ),
-              ],
+              ),
             ),
-          ),
-        ],
+
+            // 3. Filename & Size Caption
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      item.fileName,
+                      key: ValueKey('photo_filename_${item.id}'),
+                      style: AppTypography.monoConsole.copyWith(
+                        fontSize: 10,
+                        color: palette.textPrimary,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    item.formattedTotalSize,
+                    style: AppTypography.monoConsole.copyWith(
+                      fontSize: 9,
+                      color: palette.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // 4. Mapped friendly error message if failed
+            if (isFailed && progress.errorMessage != null) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0).copyWith(bottom: 6.0),
+                child: Text(
+                  AppErrorMapper.map(progress.errorMessage, fallback: AppErrors.uploadFailed),
+                  key: ValueKey('photo_error_${item.id}'),
+                  style: AppTypography.mutedMetadata.copyWith(
+                    color: palette.errorRed,
+                    fontSize: 9,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
 
   /// [SEND TO PC] primary action button.
   Widget _buildSendToPCButton(
-    bool hasPendingPhotos,
+    PhotoTransferService photoService,
+    bool isAuthenticated,
     bool isUploading,
-    int photoCount,
     AppPalette palette,
   ) {
+    final hasUploadable = photoService.hasUploadablePhotos;
+    final onlyFailedRemain =
+        !photoService.hasPendingPhotos && photoService.hasFailedPhotos;
+    final canSend = isAuthenticated && hasUploadable && !isUploading;
+
+    final String buttonLabel;
+    if (isUploading) {
+      buttonLabel = 'STREAMING TO WINDOWS...';
+    } else if (onlyFailedRemain) {
+      buttonLabel = 'RETRY FAILED (${photoService.failedCount})';
+    } else {
+      final count = photoService.waitingCount + photoService.failedCount;
+      buttonLabel = 'SEND TO PC ($count)';
+    }
+
     return ElevatedButton.icon(
       key: const ValueKey('send_to_pc_btn'),
-      onPressed: (!hasPendingPhotos || isUploading) ? null : _onSendToPCPressed,
+      onPressed: canSend ? _onSendToPCPressed : null,
       icon: isUploading
           ? SizedBox(
               width: 16,
@@ -588,9 +725,7 @@ class _PhotosScreenState extends State<PhotosScreen> {
             )
           : const Icon(Icons.send_rounded, size: 18),
       label: Text(
-        isUploading
-            ? 'STREAMING TO WINDOWS...'
-            : 'SEND TO PC ($photoCount)',
+        buttonLabel,
         style: AppTypography.sectionHeading.copyWith(
           letterSpacing: 0.8,
           fontSize: 12,

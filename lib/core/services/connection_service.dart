@@ -79,6 +79,15 @@ class ConnectionService extends ChangeNotifier {
   /// Instantaneous connection state.
   ConnectionState get currentState => client.currentConnectionState;
 
+  /// True if client is connected and active session is authenticated.
+  bool get isAuthenticated {
+    if (!currentState.isConnected) return false;
+    if (client is MockWindowsBridgeClient) {
+      return authService.lastResponse?.authenticated ?? true;
+    }
+    return authService.isAuthenticated;
+  }
+
   /// Currently active or target Windows device.
   WindowsDevice? get activeDevice => _activeDevice;
 
@@ -157,6 +166,7 @@ class ConnectionService extends ChangeNotifier {
 
     try {
       final config = BridgeConfig(host: host, port: port);
+      client.configure(config);
       await client.connect(config);
 
       // Authenticate with stored token
@@ -283,6 +293,7 @@ class ConnectionService extends ChangeNotifier {
         port: targetPort ?? AppConstants.defaultHttpPort,
         mode: mode,
       );
+      client.configure(config);
       await client.connect(config);
 
       // Step 4: Authenticate with stored token
@@ -352,6 +363,17 @@ class ConnectionService extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Step 0: Delete any stored token starting with "mock_" whenever mode is not mock
+      if (mode != BridgeMode.mock) {
+        final existingToken = await secureStorage.getToken();
+        if (existingToken != null && existingToken.startsWith('mock_')) {
+          debugPrint(
+            '[ConnectionService] Purged stale mock token ($existingToken) in non-mock mode',
+          );
+          await secureStorage.deleteToken();
+        }
+      }
+
       // Step 1: Discover / Identify Target Host
       String? targetHost = await secureStorage.getHost();
       int? targetPort = await secureStorage.getPort();
@@ -386,6 +408,14 @@ class ConnectionService extends ChangeNotifier {
         );
       }
 
+      // Always configure client host/port before attempting sockets or authentication
+      final config = BridgeConfig(
+        host: targetHost,
+        port: targetPort ?? AppConstants.defaultHttpPort,
+        mode: mode,
+      );
+      client.configure(config);
+
       // Step 2: Check Stored Token
       final token = await secureStorage.getToken();
       if (token == null || token.isEmpty) {
@@ -394,15 +424,25 @@ class ConnectionService extends ChangeNotifier {
         return StartupFlowResult.pairingRequired;
       }
 
-      // Step 3: Connect
-      final config = BridgeConfig(
-        host: targetHost,
-        port: targetPort ?? AppConstants.defaultHttpPort,
-        mode: mode,
-      );
+      // Step 3: Preflight GET /health before WebSocket connection
+      final isHealthy = await client.checkHealth();
+      if (!isHealthy) {
+        debugPrint(
+          '[ConnectionService] Preflight health check failed for $targetHost:${config.port}',
+        );
+        _isOrchestrating = false;
+        _errorMessage = AppErrorMapper.mapFailure(
+          BridgeFailure.unreachable,
+          host: targetHost,
+        );
+        notifyListeners();
+        return StartupFlowResult.connectionFailed;
+      }
+
+      // Step 4: Connect WebSocket (5s timeout)
       await client.connect(config);
 
-      // Step 4: Authenticate
+      // Step 5: Authenticate
       final authResp = await authService.authenticate(token);
       _isOrchestrating = false;
 
@@ -423,8 +463,8 @@ class ConnectionService extends ChangeNotifier {
         notifyListeners();
         return StartupFlowResult.connected;
       } else {
-        // Stored token was invalid or expired: clear it and request re-pairing
-        await secureStorage.deleteToken();
+        // Stored token was invalid or expired: clear all stored credentials and request re-pairing
+        await secureStorage.clearAll();
         _errorMessage = AppErrors.tokenExpired;
         _isManualDisconnect = true;
         await client.disconnect();
@@ -433,8 +473,9 @@ class ConnectionService extends ChangeNotifier {
         return StartupFlowResult.pairingRequired;
       }
     } catch (e) {
+      debugPrint('[ConnectionService] runStartupFlow exception: $e');
       _isOrchestrating = false;
-      _errorMessage = AppErrorMapper.map(e);
+      _errorMessage = AppErrorMapper.map(e, host: _activeDevice?.host);
       notifyListeners();
       return StartupFlowResult.connectionFailed;
     }
@@ -448,6 +489,13 @@ class ConnectionService extends ChangeNotifier {
   }) async {
     _activeDevice = device;
     _isManualDisconnect = false;
+    final config = BridgeConfig(
+      host: device.host,
+      port: device.port,
+      mode: mode,
+    );
+    client.configure(config);
+
     final result = await pairingService.pairDevice(
       device: device,
       pinCode: pinCode,
@@ -457,8 +505,10 @@ class ConnectionService extends ChangeNotifier {
       _activeDevice = device.copyWith(isPaired: true);
       _errorMessage = null;
     } else {
-      _errorMessage =
-          AppErrorMapper.map(result.errorMessage ?? AppErrors.pairingFailed);
+      _errorMessage = AppErrorMapper.map(
+        result.errorMessage ?? AppErrors.pairingFailed,
+        host: device.host,
+      );
     }
     notifyListeners();
     return result;

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goori_os/app/app.dart';
+import 'package:goori_os/core/errors/app_errors.dart';
 import 'package:goori_os/core/network/network.dart';
 import 'package:goori_os/core/services/services.dart';
 import 'package:goori_os/core/storage/secure_storage_service.dart';
@@ -98,7 +99,7 @@ void main() {
         // 1. Title and Action Button are rendered
         expect(find.text('FILE STREAM'), findsOneWidget);
         expect(find.byKey(const ValueKey('select_files_btn')), findsOneWidget);
-        expect(find.text('+ Select Files'), findsOneWidget);
+        expect(find.text('Select Files'), findsOneWidget);
 
         // 2. Empty state is shown initially
         expect(find.byKey(const ValueKey('empty_transfers_card')), findsOneWidget);
@@ -248,7 +249,7 @@ void main() {
         // Displays ✕ FAILED badge
         expect(find.text('✕ FAILED'), findsOneWidget);
         expect(
-          find.text('Stream interrupted: simulated host connection drop'),
+          find.text(AppErrors.uploadFailed),
           findsOneWidget,
         );
       },

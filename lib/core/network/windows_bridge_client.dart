@@ -15,6 +15,12 @@ abstract class WindowsBridgeClient {
   /// Current instantaneous connection state.
   ConnectionState get currentConnectionState;
 
+  /// Sets host/port/protocol configuration without opening sockets.
+  void configure(BridgeConfig config);
+
+  /// Performs a preflight health check probe against GET /health (5s).
+  Future<bool> checkHealth();
+
   /// Establishes communication transport with the bridge host using the provided [config].
   Future<void> connect(BridgeConfig config);
 

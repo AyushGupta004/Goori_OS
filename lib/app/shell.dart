@@ -7,7 +7,7 @@ import '../features/settings/screens/settings_screen.dart';
 import 'theme.dart';
 
 /// Persistent app shell providing bottom navigation between the 4 core sections:
-/// HOME / FILES / PHOTOS / ⚙ (Settings).
+/// HOME / FILES / PHOTOS / SETTINGS.
 class AppShell extends StatefulWidget {
   final int initialIndex;
 
@@ -101,7 +101,7 @@ class AppShellState extends State<AppShell> {
             BottomNavigationBarItem(
               icon: Icon(Icons.settings_outlined, key: ValueKey('nav_settings')),
               activeIcon: Icon(Icons.settings, key: ValueKey('nav_settings')),
-              label: '⚙',
+              label: 'SETTINGS',
             ),
           ],
         ),

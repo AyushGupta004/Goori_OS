@@ -4,7 +4,9 @@ import 'package:provider/provider.dart';
 import '../../../app/routes.dart';
 import '../../../app/theme.dart';
 import '../../../core/models/models.dart';
+import '../../../core/network/config.dart';
 import '../../../core/network/bridge_config_provider.dart';
+import '../../../core/services/connection_service.dart';
 import '../../../core/services/discovery_service.dart';
 import '../widgets/device_card.dart';
 import '../widgets/manual_connect_sheet.dart';
@@ -38,6 +40,18 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   }
 
   void _onDeviceSelected(WindowsDevice device) {
+    // Configure client immediately upon device selection
+    final configProvider = context.read<BridgeConfigProvider>();
+    final config = BridgeConfig(
+      host: device.host,
+      port: device.port,
+      mode: configProvider.config.mode,
+    );
+    configProvider.client.configure(config);
+    try {
+      context.read<ConnectionService>().client.configure(config);
+    } catch (_) {}
+
     // Navigate directly to pairing screen with the selected target device
     Navigator.pushNamed(
       context,

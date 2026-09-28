@@ -1,19 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../app/routes.dart';
 import '../../../app/theme.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../core/errors/app_errors.dart';
 import '../../../core/models/models.dart';
+import '../../../core/services/connection_service.dart';
 import '../../../core/services/file_transfer_service.dart';
 import '../services/file_picker_service.dart';
 
 /// Screen managing file selection and real-time streaming upload to Windows Bridge.
 /// Conforms to Task 8 requirements:
-/// - "+ Select Files" with multi-select support
+/// - "Select Files" with multi-select support (no duplicate plus)
 /// - Active Transfers list with filename, progress bar, percentage, and 5 states:
 ///   waiting / uploading / completed / failed / cancelled
 /// - Live progress streaming & cancellation of in-flight transfers
-/// - Permission requested strictly upon tapping "+ Select Files", never on screen load
+/// - Permission requested strictly upon tapping "Select Files", never on screen load
 class FilesScreen extends StatefulWidget {
   final FilePickerService? filePickerService;
 
@@ -58,7 +61,7 @@ class _FilesScreenState extends State<FilesScreen> {
   }
 
   Future<void> _onSelectFilesPressed() async {
-    // 1. Request permission strictly when user taps "+ Select Files"
+    // 1. Request permission strictly when user taps "Select Files"
     final hasPermission = await _filePickerService.requestStoragePermission();
     if (!hasPermission) {
       setState(() {
@@ -89,6 +92,8 @@ class _FilesScreenState extends State<FilesScreen> {
   Widget build(BuildContext context) {
     final palette = context.palette;
     final transferService = context.watch<FileTransferService>();
+    final connectionService = context.watch<ConnectionService>();
+    final isAuthenticated = connectionService.isAuthenticated;
     final transfers = transferService.transfers;
     final hasFinishedTransfers = transfers.any((t) => t.progress.isFinished);
 
@@ -104,6 +109,22 @@ class _FilesScreenState extends State<FilesScreen> {
           ),
         ),
         actions: [
+          if (transferService.hasFailedTransfers)
+            TextButton.icon(
+              key: const ValueKey('retry_all_failed_transfers_btn'),
+              onPressed: transferService.isUploading
+                  ? null
+                  : () => transferService.retryAllFailed(),
+              icon: Icon(Icons.refresh, size: 14, color: palette.accentGreen),
+              label: Text(
+                'RETRY ALL (${transferService.failedCount})',
+                style: AppTypography.mutedMetadata.copyWith(
+                  color: palette.accentGreen,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 10,
+                ),
+              ),
+            ),
           if (hasFinishedTransfers)
             TextButton(
               key: const ValueKey('clear_completed_transfers_btn'),
@@ -129,8 +150,13 @@ class _FilesScreenState extends State<FilesScreen> {
         child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
           children: [
+            // 0. Not Connected Inline Strip
+            if (!isAuthenticated) ...[
+              _buildNotConnectedStrip(palette),
+            ],
+
             // 1. Select Files Action Card
-            _buildSelectFilesCard(palette),
+            _buildSelectFilesCard(palette, isAuthenticated, transferService.isUploading),
 
             const SizedBox(height: 16),
 
@@ -177,8 +203,57 @@ class _FilesScreenState extends State<FilesScreen> {
     );
   }
 
-  /// Header container housing the prominent "+ Select Files" action button.
-  Widget _buildSelectFilesCard(AppPalette palette) {
+  /// Subtle inline strip showing disconnection status with CONNECT action.
+  Widget _buildNotConnectedStrip(AppPalette palette) {
+    return Container(
+      key: const ValueKey('files_not_connected_strip'),
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: palette.card,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: palette.border, width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.cloud_off_outlined,
+            size: 18,
+            color: palette.textMuted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Not connected to PC',
+              style: AppTypography.mutedMetadata.copyWith(
+                color: palette.textMuted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          InkWell(
+            key: const ValueKey('files_connect_btn'),
+            onTap: () => Navigator.pushNamed(context, AppRoutes.discovery),
+            child: Text(
+              'CONNECT',
+              style: AppTypography.mutedMetadata.copyWith(
+                color: palette.textPrimary,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Header container housing the prominent "Select Files" action button.
+  Widget _buildSelectFilesCard(
+    AppPalette palette,
+    bool isAuthenticated,
+    bool isUploading,
+  ) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -191,9 +266,9 @@ class _FilesScreenState extends State<FilesScreen> {
         children: [
           ElevatedButton.icon(
             key: const ValueKey('select_files_btn'),
-            onPressed: _onSelectFilesPressed,
+            onPressed: (!isAuthenticated || isUploading) ? null : _onSelectFilesPressed,
             icon: const Icon(Icons.add_rounded, size: 20),
-            label: const Text('+ Select Files'),
+            label: const Text('Select Files'),
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 14),
             ),
@@ -452,6 +527,29 @@ class _FilesScreenState extends State<FilesScreen> {
                       ),
                     ),
                   ),
+                )
+              else if (isFailed)
+                InkWell(
+                  key: ValueKey('retry_transfer_btn_${task.transferId}'),
+                  onTap: () => transferService.retryTransfer(task.transferId),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.refresh, size: 14, color: palette.accentGreen),
+                        const SizedBox(width: 4),
+                        Text(
+                          'RETRY',
+                          style: AppTypography.mutedMetadata.copyWith(
+                            color: palette.accentGreen,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
             ],
           ),
@@ -460,7 +558,7 @@ class _FilesScreenState extends State<FilesScreen> {
           if (isFailed && progress.errorMessage != null) ...[
             const SizedBox(height: 6),
             Text(
-              progress.errorMessage!,
+              AppErrorMapper.map(progress.errorMessage, fallback: AppErrors.uploadFailed),
               key: ValueKey('error_msg_${task.transferId}'),
               style: AppTypography.mutedMetadata.copyWith(
                 color: palette.errorRed,

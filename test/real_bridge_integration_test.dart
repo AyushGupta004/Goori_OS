@@ -15,25 +15,46 @@ void main() {
   const bridgePort = 7890;
 
   setUpAll(() async {
-    // Start companion Windows Bridge backend project (Prompt A)
-    backendProcess = await Process.start(
-      'python',
-      ['-m', 'uvicorn', 'backend.main:app', '--host', bridgeHost, '--port', '$bridgePort'],
-      workingDirectory: r'D:\web_app\Ai_voice',
-    );
-
-    // Allow uvicorn to bind and initialize
     final client = http.Client();
     bool ready = false;
-    for (int i = 0; i < 30; i++) {
-      try {
-        final resp = await client.get(Uri.parse('http://$bridgeHost:$bridgePort/api/status'));
-        if (resp.statusCode == 200) {
-          ready = true;
+    try {
+      final resp = await client.get(Uri.parse('http://$bridgeHost:$bridgePort/api/status'));
+      if (resp.statusCode == 200) {
+        ready = true;
+      }
+    } catch (_) {}
+
+    if (!ready) {
+      final possibleDirs = [
+        r'c:\Users\Aayush\OneDrive\Desktop\web_app\Ai_voice',
+        r'D:\web_app\Ai_voice',
+      ];
+      String? targetDir;
+      for (final d in possibleDirs) {
+        if (Directory(d).existsSync()) {
+          targetDir = d;
           break;
         }
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 500));
+      }
+
+      if (targetDir != null) {
+        backendProcess = await Process.start(
+          'python',
+          ['-m', 'uvicorn', 'backend.main:app', '--host', bridgeHost, '--port', '$bridgePort'],
+          workingDirectory: targetDir,
+        );
+      }
+
+      for (int i = 0; i < 30; i++) {
+        try {
+          final resp = await client.get(Uri.parse('http://$bridgeHost:$bridgePort/api/status'));
+          if (resp.statusCode == 200) {
+            ready = true;
+            break;
+          }
+        } catch (_) {}
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
     }
     client.close();
 
@@ -63,7 +84,11 @@ void main() {
     // 1. Wrong 6-digit PIN rejected with clear error
     final wrongPinResponse = await realClient.pair('000000');
     expect(wrongPinResponse.success, isFalse);
-    expect(wrongPinResponse.errorMessage, contains('INVALID_PAIRING_CODE'));
+    expect(wrongPinResponse.failure, equals(BridgeFailure.wrongPin));
+    expect(
+      wrongPinResponse.errorMessage,
+      anyOf(contains('INVALID_PAIRING_CODE'), contains("That code isn't correct")),
+    );
 
     // 2. Fetch active PIN from companion server status
     final statusResp = await http.get(Uri.parse('http://$bridgeHost:$bridgePort/pair/status'));

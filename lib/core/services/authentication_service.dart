@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart';
 
+import '../constants/app_constants.dart';
+import '../errors/app_errors.dart';
 import '../models/models.dart';
+import '../network/config.dart';
 import '../network/windows_bridge_client.dart';
 import '../storage/secure_storage_service.dart';
 
@@ -41,6 +44,12 @@ class AuthenticationService extends ChangeNotifier {
       return failure;
     }
 
+    final host = await secureStorage.getHost();
+    final port = await secureStorage.getPort() ?? AppConstants.defaultHttpPort;
+    if (host != null && host.isNotEmpty) {
+      client.configure(BridgeConfig(host: host, port: port));
+    }
+
     return await authenticate(token);
   }
 
@@ -56,7 +65,10 @@ class AuthenticationService extends ChangeNotifier {
       _isAuthenticated = response.authenticated;
 
       if (!response.authenticated) {
-        _errorMessage = response.errorMessage ?? 'Authentication failed.';
+        _errorMessage = AppErrorMapper.map(
+          response.errorMessage,
+          fallback: AppErrors.authenticationFailed,
+        );
       } else {
         _errorMessage = null;
       }
@@ -65,11 +77,13 @@ class AuthenticationService extends ChangeNotifier {
       notifyListeners();
       return response;
     } catch (e) {
+      debugPrint('[AuthenticationService] authenticate exception: $e');
+      final friendlyMsg = AppErrorMapper.map(e, fallback: AppErrors.authenticationFailed);
       final errResponse = AuthenticationResponse(
         authenticated: false,
         deviceId: '',
         serverVersion: '1.0',
-        errorMessage: 'Auth exception: ${e.toString()}',
+        errorMessage: friendlyMsg,
       );
       _isAuthenticated = false;
       _errorMessage = errResponse.errorMessage;

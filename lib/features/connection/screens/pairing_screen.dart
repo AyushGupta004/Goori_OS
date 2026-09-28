@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../app/routes.dart';
 import '../../../app/theme.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../core/errors/app_errors.dart';
 import '../../../core/models/models.dart';
 import '../../../core/network/bridge_config_provider.dart';
 import '../../../core/services/connection_service.dart';
@@ -27,6 +28,8 @@ class _PairingScreenState extends State<PairingScreen> {
   bool _isSubmitting = false;
   bool _isPaired = false;
   String? _pairingError;
+  bool _isUnreachable = false;
+  bool _troubleshootingExpanded = false;
 
   @override
   void initState() {
@@ -54,6 +57,7 @@ class _PairingScreenState extends State<PairingScreen> {
     setState(() {
       _isSubmitting = true;
       _pairingError = null;
+      _isUnreachable = false;
     });
 
     final config = context.read<BridgeConfigProvider>().config;
@@ -94,10 +98,31 @@ class _PairingScreenState extends State<PairingScreen> {
         );
       }
     } else {
+      final isWrongPin = response.failure == BridgeFailure.wrongPin ||
+          (response.errorMessage != null &&
+              (response.errorMessage!.contains("isn't correct") ||
+                  response.errorMessage!.contains('wrong') ||
+                  response.errorMessage!.contains('invalid_pairing_code') ||
+                  response.errorMessage!.contains('invalid code')));
+      final isUnreachable = response.failure == BridgeFailure.unreachable ||
+          (response.errorMessage != null &&
+              (response.errorMessage!.contains("Can't reach") ||
+                  response.errorMessage!.contains('unreachable')));
+
       setState(() {
-        _pairingError = response.errorMessage?.isNotEmpty == true
-            ? response.errorMessage!
-            : 'Invalid code. Check the 6-digit code shown on your Windows computer.';
+        _isUnreachable = isUnreachable;
+        if (isWrongPin) {
+          _pairingError = AppErrors.wrongPin;
+          _pinController.clear();
+        } else if (isUnreachable) {
+          _pairingError = AppErrors.unreachable(device.host);
+        } else {
+          _pairingError = AppErrorMapper.map(
+            response.errorMessage,
+            host: device.host,
+            fallback: 'Pairing failed. Please verify the connection and try again.',
+          );
+        }
       });
     }
   }
@@ -267,28 +292,153 @@ class _PairingScreenState extends State<PairingScreen> {
                   const SizedBox(height: 16),
                   Container(
                     key: const ValueKey('pairing_error_banner'),
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
                       color: palette.card,
                       borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: palette.errorRed, width: 1),
+                      border: Border.all(
+                        color: palette.errorRed.withValues(alpha: 0.6),
+                        width: 1,
+                      ),
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(
-                          Icons.error_outline,
-                          color: palette.errorRed,
-                          size: 18,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            _pairingError!,
-                            style: AppTypography.mutedMetadata.copyWith(
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(
+                              Icons.error_outline,
                               color: palette.errorRed,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _pairingError!,
+                                style: AppTypography.mutedMetadata.copyWith(
+                                  color: palette.errorRed,
+                                  fontSize: 12,
+                                  height: 1.3,
+                                ),
+                              ),
+                            ),
+                            if (_isUnreachable) ...[
+                              const SizedBox(width: 8),
+                              ElevatedButton(
+                                key: const ValueKey('pairing_retry_btn'),
+                                onPressed: _isSubmitting
+                                    ? null
+                                    : () => _onPairPressed(device),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: palette.secondary,
+                                  foregroundColor: palette.textPrimary,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 4,
+                                  ),
+                                  minimumSize: Size.zero,
+                                  side: BorderSide(
+                                    color: palette.border,
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Text(
+                                  'RETRY',
+                                  style: AppTypography.mutedMetadata.copyWith(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: palette.textPrimary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (_isUnreachable) ...[
+                          const SizedBox(height: 10),
+                          InkWell(
+                            key: const ValueKey('troubleshooting_toggle_btn'),
+                            onTap: () {
+                              setState(() {
+                                _troubleshootingExpanded =
+                                    !_troubleshootingExpanded;
+                              });
+                            },
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _troubleshootingExpanded
+                                      ? Icons.keyboard_arrow_up
+                                      : Icons.keyboard_arrow_down,
+                                  size: 16,
+                                  color: palette.textMuted,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Troubleshooting checklist',
+                                  style: AppTypography.mutedMetadata.copyWith(
+                                    color: palette.textMuted,
+                                    decoration: TextDecoration.underline,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                        ),
+                          if (_troubleshootingExpanded) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              key: const ValueKey('troubleshooting_list'),
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: palette.secondary,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: palette.border,
+                                  width: 1,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: AppErrors.troubleshootingSteps
+                                    .map(
+                                      (step) => Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 4.0,
+                                        ),
+                                        child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              '• ',
+                                              style: TextStyle(
+                                                color: palette.textMuted,
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                            Expanded(
+                                              child: Text(
+                                                step,
+                                                style: AppTypography
+                                                    .mutedMetadata
+                                                    .copyWith(
+                                                  color: palette.textPrimary,
+                                                  fontSize: 11,
+                                                  height: 1.3,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    )
+                                    .toList(),
+                              ),
+                            ),
+                          ],
+                        ],
                       ],
                     ),
                   ),

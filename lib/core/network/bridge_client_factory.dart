@@ -18,12 +18,12 @@ class BridgeClientFactory {
     BridgeConfig config, {
     http.Client? httpClient,
   }) {
-    switch (config.mode) {
-      case BridgeMode.mock:
-        return MockWindowsBridgeClient();
-      case BridgeMode.dev:
-      case BridgeMode.production:
-        return RealWindowsBridgeClient(httpClient: httpClient);
-    }
+    final client = switch (config.mode) {
+      BridgeMode.mock => MockWindowsBridgeClient(),
+      BridgeMode.dev || BridgeMode.production =>
+        RealWindowsBridgeClient(httpClient: httpClient),
+    };
+    client.configure(config);
+    return client;
   }
 }

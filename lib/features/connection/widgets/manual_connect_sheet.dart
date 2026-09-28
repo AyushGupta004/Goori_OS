@@ -6,6 +6,7 @@ import '../../../core/constants/app_constants.dart';
 import '../../../core/models/models.dart';
 import '../../../core/network/config.dart';
 import '../../../core/network/bridge_config_provider.dart';
+import '../../../core/services/connection_service.dart';
 import '../../../core/services/discovery_service.dart';
 
 /// Modal bottom sheet allowing manual host IP and port configuration.
@@ -72,6 +73,12 @@ class _ManualConnectSheetState extends State<ManualConnectSheet> {
     );
 
     await configProvider.updateConfig(updatedConfig);
+    configProvider.client.configure(updatedConfig);
+    if (mounted) {
+      try {
+        context.read<ConnectionService>().client.configure(updatedConfig);
+      } catch (_) {}
+    }
 
     // Register manual device in DiscoveryService
     if (mounted) {

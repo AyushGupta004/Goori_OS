@@ -4,10 +4,12 @@ import 'package:provider/provider.dart';
 
 import '../../../app/routes.dart';
 import '../../../app/theme.dart';
+import '../../../core/errors/app_errors.dart';
 import '../../../core/models/models.dart';
 import '../../../core/services/command_service.dart';
 import '../../../core/services/connection_service.dart';
 import '../../../core/services/settings_service.dart';
+import '../../connection/screens/discovery_screen.dart';
 import '../services/speech_recognition_service.dart';
 
 /// Screen managing full voice command flow:
@@ -205,7 +207,7 @@ class _VoiceScreenState extends State<VoiceScreen>
           commandId: requestId,
           success: false,
           status: 'failed',
-          message: 'Execution failed',
+          message: AppErrorMapper.map(e, fallback: AppErrors.commandFailed),
           timestamp: DateTime.now(),
           errorDetails: e.toString(),
         );
@@ -225,7 +227,7 @@ class _VoiceScreenState extends State<VoiceScreen>
   Widget build(BuildContext context) {
     final palette = context.palette;
     final connectionService = context.watch<ConnectionService>();
-    final isConnected = connectionService.currentState.isConnected;
+    final isAuthenticated = connectionService.isAuthenticated;
     final isListening = _speechService.isListening;
 
     if (isListening) {
@@ -271,6 +273,11 @@ class _VoiceScreenState extends State<VoiceScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 0. Disconnected inline strip if not authenticated
+              if (!isAuthenticated) ...[
+                _buildNotConnectedStrip(palette),
+              ],
+
               // 1. Mic idle / listening indicator block
               _buildStateHeader(isListening, palette),
 
@@ -278,7 +285,7 @@ class _VoiceScreenState extends State<VoiceScreen>
 
               // 2. Centered minimal geometric microphone button
               Center(
-                child: _buildMicButton(isListening, isConnected, palette),
+                child: _buildMicButton(isListening, isAuthenticated, palette),
               ),
 
               const SizedBox(height: 24),
@@ -297,7 +304,7 @@ class _VoiceScreenState extends State<VoiceScreen>
 
               // 5. "COMMAND" review card with [SEND] / [CANCEL]
               if (_stagedCommand != null && !_isDispatching) ...[
-                _buildReviewCard(_stagedCommand!, palette),
+                _buildReviewCard(_stagedCommand!, isAuthenticated, palette),
                 const SizedBox(height: 20),
               ],
 
@@ -315,6 +322,57 @@ class _VoiceScreenState extends State<VoiceScreen>
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Subtle inline strip showing disconnection status with CONNECT action.
+  Widget _buildNotConnectedStrip(AppPalette palette) {
+    return Container(
+      key: const ValueKey('voice_not_connected_strip'),
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: palette.card,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: palette.border, width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.cloud_off_outlined,
+            size: 18,
+            color: palette.textMuted,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Not connected to PC',
+              style: AppTypography.mutedMetadata.copyWith(
+                color: palette.textMuted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          InkWell(
+            key: const ValueKey('voice_connect_btn'),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const DiscoveryScreen(),
+                ),
+              );
+            },
+            child: Text(
+              'CONNECT',
+              style: AppTypography.mutedMetadata.copyWith(
+                color: palette.textPrimary,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.8,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -384,10 +442,11 @@ class _VoiceScreenState extends State<VoiceScreen>
 
   /// Geometric, minimal microphone control button
   Widget _buildMicButton(
-      bool isListening, bool isConnected, AppPalette palette) {
+      bool isListening, bool isAuthenticated, AppPalette palette) {
+    final canTap = isAuthenticated && !_isDispatching;
     return InkWell(
       key: const ValueKey('voice_mic_btn'),
-      onTap: _onMicTap,
+      onTap: canTap ? _onMicTap : null,
       borderRadius: BorderRadius.circular(8),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
@@ -401,7 +460,7 @@ class _VoiceScreenState extends State<VoiceScreen>
           border: Border.all(
             color: isListening
                 ? palette.accentGreen
-                : (isConnected ? palette.textPrimary : palette.border),
+                : (isAuthenticated ? palette.textPrimary : palette.border),
             width: isListening ? 2.0 : 1.5,
           ),
         ),
@@ -411,7 +470,7 @@ class _VoiceScreenState extends State<VoiceScreen>
             size: 46,
             color: isListening
                 ? palette.accentGreen
-                : (isConnected ? palette.textPrimary : palette.textMuted),
+                : (isAuthenticated ? palette.textPrimary : palette.textMuted.withValues(alpha: 0.4)),
           ),
         ),
       ),
@@ -515,7 +574,9 @@ class _VoiceScreenState extends State<VoiceScreen>
   }
 
   /// Review card displaying recognized text with [SEND] and [CANCEL] actions
-  Widget _buildReviewCard(String commandText, AppPalette palette) {
+  Widget _buildReviewCard(
+      String commandText, bool isAuthenticated, AppPalette palette) {
+    final canSend = isAuthenticated && !_isDispatching;
     return Container(
       key: const ValueKey('command_review_card'),
       padding: const EdgeInsets.all(16),
@@ -580,7 +641,7 @@ class _VoiceScreenState extends State<VoiceScreen>
               Expanded(
                 child: ElevatedButton(
                   key: const ValueKey('send_command_btn'),
-                  onPressed: () => _dispatchCommand(commandText),
+                  onPressed: canSend ? () => _dispatchCommand(commandText) : null,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: palette.textPrimary,
                     foregroundColor: palette.background,

@@ -60,6 +60,17 @@ class MockWindowsBridgeClient implements WindowsBridgeClient {
   }
 
   @override
+  void configure(BridgeConfig config) {
+    // No-op for mock client: only sets host/port/protocol without opening sockets
+  }
+
+  @override
+  Future<bool> checkHealth() async {
+    await Future.delayed(const Duration(milliseconds: 50));
+    return !forceConnectFailure;
+  }
+
+  @override
   Future<void> connect(BridgeConfig config) async {
     _emitState(ConnectionState.connecting);
 

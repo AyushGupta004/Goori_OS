@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../constants/app_constants.dart';
+import '../errors/app_errors.dart';
 import '../models/models.dart';
 import '../network/windows_bridge_client.dart';
 
@@ -32,8 +33,27 @@ class PhotoTransferService extends ChangeNotifier {
   Stream<TransferProgress> get progressStream =>
       _progressStreamController.stream;
 
-  /// Whether there are pending photos staged that have not been uploaded yet.
-  bool get hasPendingPhotos => _photos.any((p) => !p.isFinished);
+  /// Whether there are pending photos waiting to be uploaded.
+  bool get hasPendingPhotos =>
+      _photos.any((p) => p.progress.status == TransferStatus.waiting);
+
+  /// Whether there are any photos whose upload failed and can be retried.
+  bool get hasFailedPhotos =>
+      _photos.any((p) => p.progress.status == TransferStatus.failed);
+
+  /// Whether there are photos that can be sent or retried (waiting or failed).
+  bool get hasUploadablePhotos =>
+      _photos.any((p) =>
+          p.progress.status == TransferStatus.waiting ||
+          p.progress.status == TransferStatus.failed);
+
+  /// Count of currently failed photos.
+  int get failedCount =>
+      _photos.where((p) => p.progress.status == TransferStatus.failed).length;
+
+  /// Count of currently waiting photos.
+  int get waitingCount =>
+      _photos.where((p) => p.progress.status == TransferStatus.waiting).length;
 
   /// Adds a single captured photo to the staged list.
   void addPhoto(File file) {
@@ -88,6 +108,33 @@ class PhotoTransferService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Retries a single failed photo by its [id]. Completed photos are never re-sent.
+  Future<void> retryPhoto(String id) async {
+    final itemIndex = _photos.indexWhere((p) => p.id == id);
+    if (itemIndex < 0) return;
+    final item = _photos[itemIndex];
+    if (item.progress.status == TransferStatus.completed) return;
+
+    item.progress = TransferProgress(
+      transferId: item.id,
+      bytesTransferred: 0,
+      totalBytes: item.totalBytes,
+      status: TransferStatus.waiting,
+    );
+    notifyListeners();
+    await uploadPhoto(item.file, transferId: item.id);
+  }
+
+  /// Retries all currently failed photos in sequence.
+  Future<void> retryFailedPhotos() async {
+    final failedItems = _photos
+        .where((p) => p.progress.status == TransferStatus.failed)
+        .toList();
+    for (final item in failedItems) {
+      await retryPhoto(item.id);
+    }
+  }
+
   /// Initiates a memory-safe streamed upload of [photo] to the Windows host.
   Future<void> uploadPhoto(
     File photo, {
@@ -125,23 +172,27 @@ class PhotoTransferService extends ChangeNotifier {
           if (progress.status == TransferStatus.completed ||
               progress.status == TransferStatus.failed) {
             if (progress.status == TransferStatus.failed) {
-              _errorMessage = progress.errorMessage;
+              _errorMessage = progress.errorMessage != null
+                  ? AppErrorMapper.map(progress.errorMessage)
+                  : AppErrors.uploadFailed;
             }
           }
           notifyListeners();
         },
       );
     } catch (e) {
+      debugPrint('[PhotoTransferService] uploadPhoto exception: $e');
+      final friendly = AppErrorMapper.map(e, fallback: AppErrors.uploadFailed);
       if (item != null) {
         item.progress = TransferProgress(
           transferId: tId,
           bytesTransferred: item.progress.bytesTransferred,
           totalBytes: item.totalBytes,
           status: TransferStatus.failed,
-          errorMessage: e.toString(),
+          errorMessage: friendly,
         );
       }
-      _errorMessage = e.toString();
+      _errorMessage = friendly;
       notifyListeners();
     } finally {
       _isUploading = _photos.any((p) => p.isUploading);
@@ -149,16 +200,33 @@ class PhotoTransferService extends ChangeNotifier {
     }
   }
 
-  /// Triggers [uploadPhoto] for all staged photos that have not completed yet.
+  /// Triggers [uploadPhoto] for all staged photos that are waiting or failed.
+  /// Completed photos are never re-sent.
   Future<void> sendAllToPC() async {
-    final pendingItems = _photos.where((p) => !p.isFinished).toList();
-    if (pendingItems.isEmpty) return;
+    final uploadableItems = _photos
+        .where((p) =>
+            p.progress.status == TransferStatus.waiting ||
+            p.progress.status == TransferStatus.failed)
+        .toList();
+    if (uploadableItems.isEmpty) return;
 
     _isUploading = true;
     _errorMessage = null;
+
+    // Reset status of failed items to waiting
+    for (final item in uploadableItems) {
+      if (item.progress.status == TransferStatus.failed) {
+        item.progress = TransferProgress(
+          transferId: item.id,
+          bytesTransferred: 0,
+          totalBytes: item.totalBytes,
+          status: TransferStatus.waiting,
+        );
+      }
+    }
     notifyListeners();
 
-    for (final item in pendingItems) {
+    for (final item in uploadableItems) {
       await uploadPhoto(item.file, transferId: item.id);
     }
 
