@@ -8,6 +8,7 @@ class WindowsDevice {
   final DateTime? lastSeen;
   final String? osVersion;
   final String? fingerprint;
+  final bool isResponding;
 
   const WindowsDevice({
     required this.id,
@@ -15,6 +16,7 @@ class WindowsDevice {
     required this.host,
     required this.port,
     this.isPaired = false,
+    this.isResponding = true,
     this.lastSeen,
     this.osVersion,
     this.fingerprint,
@@ -28,6 +30,7 @@ class WindowsDevice {
       host: json['host'] as String,
       port: (json['port'] as num).toInt(),
       isPaired: json['isPaired'] as bool? ?? false,
+      isResponding: json['isResponding'] as bool? ?? true,
       lastSeen: json['lastSeen'] != null
           ? DateTime.parse(json['lastSeen'] as String)
           : null,
@@ -44,6 +47,7 @@ class WindowsDevice {
       'host': host,
       'port': port,
       'isPaired': isPaired,
+      'isResponding': isResponding,
       if (lastSeen != null) 'lastSeen': lastSeen!.toIso8601String(),
       if (osVersion != null) 'osVersion': osVersion,
       if (fingerprint != null) 'fingerprint': fingerprint,
@@ -57,6 +61,7 @@ class WindowsDevice {
     String? host,
     int? port,
     bool? isPaired,
+    bool? isResponding,
     DateTime? lastSeen,
     String? osVersion,
     String? fingerprint,
@@ -67,6 +72,7 @@ class WindowsDevice {
       host: host ?? this.host,
       port: port ?? this.port,
       isPaired: isPaired ?? this.isPaired,
+      isResponding: isResponding ?? this.isResponding,
       lastSeen: lastSeen ?? this.lastSeen,
       osVersion: osVersion ?? this.osVersion,
       fingerprint: fingerprint ?? this.fingerprint,
@@ -87,5 +93,6 @@ class WindowsDevice {
 
   @override
   String toString() =>
-      'WindowsDevice(id: $id, name: $name, host: $host, port: $port, paired: $isPaired)';
+      'WindowsDevice(id: $id, name: $name, host: $host, port: $port, paired: $isPaired, responding: $isResponding)';
 }
+

@@ -1,17 +1,18 @@
 import 'package:flutter/material.dart';
 import '../features/connection/screens/discovery_screen.dart';
-import '../features/connection/screens/home_screen.dart';
 import '../features/connection/screens/pairing_screen.dart';
 import '../features/onboarding/screens/onboarding_screen.dart';
 import '../features/voice/screens/commands_screen.dart';
 import '../features/voice/screens/voice_screen.dart';
 import 'shell.dart';
+import 'startup_gate.dart';
 
 /// Centralized named route identifiers and route generation for Windows Remote.
 class AppRoutes {
   AppRoutes._();
 
-  static const String home = '/';
+  static const String startup = '/';
+  static const String home = '/home';
   static const String onboarding = '/onboarding';
   static const String discovery = '/discovery';
   static const String pairing = '/pairing';
@@ -23,6 +24,7 @@ class AppRoutes {
 
   /// Map of all static named routes in the application.
   static Map<String, WidgetBuilder> get routes => {
+        startup: (context) => const StartupGate(),
         home: (context) => const AppShell(initialIndex: 0),
         onboarding: (context) => const OnboardingScreen(),
         discovery: (context) => const DiscoveryScreen(),
@@ -44,7 +46,7 @@ class AppRoutes {
       );
     }
     return MaterialPageRoute<dynamic>(
-      builder: (context) => const HomeScreen(),
+      builder: (context) => const StartupGate(),
       settings: routeSettings,
     );
   }

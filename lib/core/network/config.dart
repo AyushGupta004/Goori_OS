@@ -43,13 +43,15 @@ class BridgeConfig {
         (json['port'] as num?)?.toInt() ?? AppConstants.defaultHttpPort;
     final wsPort =
         (json['wsPort'] as num? ?? json['ws_port'] as num?)?.toInt();
+    final mode = BridgeMode.fromString(json['mode'] as String? ?? 'dev');
+    final defaultHost = (mode == BridgeMode.mock) ? '127.0.0.1' : '';
     return BridgeConfig(
-      host: json['host'] as String? ?? '127.0.0.1',
+      host: json['host'] as String? ?? defaultHost,
       port: httpPort,
       wsPort: wsPort,
       protocolVersion:
           json['protocolVersion'] as String? ?? AppConstants.protocolVersion,
-      mode: BridgeMode.fromString(json['mode'] as String? ?? 'dev'),
+      mode: mode,
       useTls: json['useTls'] as bool? ?? false,
     );
   }
@@ -66,6 +68,9 @@ class BridgeConfig {
     };
   }
 
+  /// True if host is configured and non-empty.
+  bool get hasHost => host.trim().isNotEmpty;
+
   /// Resolved WebSocket port matching canonical protocol (7891 when HTTP is 7890).
   int get effectiveWsPort =>
       wsPort ??
@@ -77,9 +82,17 @@ class BridgeConfig {
   String get httpBaseUrl =>
       '${useTls ? "https" : "http"}://$host:$port';
 
-  /// WebSocket scheme base url.
-  String get wsBaseUrl =>
+  /// Primary WebSocket scheme base url (7891 or custom wsPort).
+  String get wsBaseUrl => primaryWsUrl;
+
+  /// Primary WebSocket URL (try ws://host:7891/ws first).
+  String get primaryWsUrl =>
       '${useTls ? "wss" : "ws"}://$host:$effectiveWsPort/ws';
+
+  /// Fallback WebSocket URL (fallback to ws://host:`http port`/ws).
+  String get fallbackWsUrl =>
+      '${useTls ? "wss" : "ws"}://$host:$port/ws';
+
 
   /// Convenience copyWith method.
   BridgeConfig copyWith({

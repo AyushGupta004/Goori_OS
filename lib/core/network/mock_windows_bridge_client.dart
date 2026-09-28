@@ -65,9 +65,20 @@ class MockWindowsBridgeClient implements WindowsBridgeClient {
   }
 
   @override
-  Future<bool> checkHealth() async {
+  Future<HealthResult> checkHealth({Duration timeout = const Duration(seconds: 5)}) async {
     await Future.delayed(const Duration(milliseconds: 50));
-    return !forceConnectFailure;
+    if (forceConnectFailure) {
+      return HealthResult.failure(
+        kind: HealthResultKind.refused,
+        details: 'Connection refused: Windows AI Bridge offline',
+      );
+    }
+    return HealthResult.success(
+      deviceName: 'My Windows PC',
+      wsUrls: const ['ws://127.0.0.1:7891/ws', 'ws://127.0.0.1:7890/ws'],
+      protocolVersion: AppConstants.protocolVersion,
+      deviceId: 'WIN-MOCK-DEV-01',
+    );
   }
 
   @override
@@ -87,7 +98,8 @@ class MockWindowsBridgeClient implements WindowsBridgeClient {
   }
 
   @override
-  Future<PairingResponse> pair(String code) async {
+  Future<PairingResponse> pair(String code, {String? clientId}) async {
+
     // Simulate host PIN cryptographic verification delay
     await Future.delayed(const Duration(milliseconds: 500));
 
@@ -116,7 +128,9 @@ class MockWindowsBridgeClient implements WindowsBridgeClient {
   @override
   Future<AuthenticationResponse> authenticate(String token) async {
     _emitState(ConnectionState.authenticating);
-    await Future.delayed(const Duration(milliseconds: 250));
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
 
     if (forceAuthFailure ||
         token.isEmpty ||

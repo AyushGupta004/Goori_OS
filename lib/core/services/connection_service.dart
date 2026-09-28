@@ -40,6 +40,7 @@ class ConnectionService extends ChangeNotifier {
   final NetworkConnectivityService? connectivityService;
 
   WindowsDevice? _activeDevice;
+  PairedDevice? _pairedDevice;
   bool _isOrchestrating = false;
   String? _errorMessage;
   StreamSubscription<ConnectionState>? _connectionStateSub;
@@ -54,6 +55,7 @@ class ConnectionService extends ChangeNotifier {
   Timer? _reconnectTimer;
   bool _isReconnecting = false;
   bool _isManualDisconnect = false;
+  bool _isDisposed = false;
 
   ConnectionService({
     required this.client,
@@ -70,7 +72,33 @@ class ConnectionService extends ChangeNotifier {
       _networkChangeSub =
           connectivityService!.onNetworkChanged.listen(_handleNetworkChange);
     }
+
+    authService.addListener(_onAuthChanged);
+
+    checkPairedState();
   }
+
+  /// Refreshes the paired device state from secure storage.
+  Future<void> checkPairedState() async {
+    _pairedDevice = await secureStorage.getPairedDevice();
+    if (_isDisposed) return;
+    if (_pairedDevice != null && _activeDevice == null) {
+      _activeDevice = WindowsDevice(
+        id: _pairedDevice!.deviceId,
+        name: _pairedDevice!.deviceName,
+        host: _pairedDevice!.host,
+        port: _pairedDevice!.port,
+        isPaired: true,
+      );
+    }
+    notifyListeners();
+  }
+
+  /// True if a PC has been paired and valid credentials exist in SecureStorage.
+  bool get isPaired => _pairedDevice != null;
+
+  /// Active paired device information.
+  PairedDevice? get pairedDevice => _pairedDevice;
 
   /// Stream of connection lifecycle events emitted throughout connection/auth.
   Stream<ConnectionState> get connectionState =>
@@ -90,6 +118,7 @@ class ConnectionService extends ChangeNotifier {
 
   /// Currently active or target Windows device.
   WindowsDevice? get activeDevice => _activeDevice;
+
 
   /// True if startup orchestration is actively running.
   bool get isOrchestrating => _isOrchestrating;
@@ -118,6 +147,12 @@ class ConnectionService extends ChangeNotifier {
     }
 
     notifyListeners();
+  }
+
+  void _onAuthChanged() {
+    if (!_isDisposed) {
+      notifyListeners();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -425,18 +460,39 @@ class ConnectionService extends ChangeNotifier {
       }
 
       // Step 3: Preflight GET /health before WebSocket connection
-      final isHealthy = await client.checkHealth();
-      if (!isHealthy) {
+      var health = await client.checkHealth();
+      if (!health.ok) {
         debugPrint(
-          '[ConnectionService] Preflight health check failed for $targetHost:${config.port}',
+          '[ConnectionService] Preflight health check failed for $targetHost:${config.port}: ${health.details}',
         );
-        _isOrchestrating = false;
-        _errorMessage = AppErrorMapper.mapFailure(
-          BridgeFailure.unreachable,
-          host: targetHost,
+        // Task 3: If the stored PC's health fails, rerun discovery to find the same PC at a new IP
+        final targetDeviceId = await secureStorage.getDeviceId() ?? '';
+        final targetDeviceName = await secureStorage.getDeviceName();
+        final relocated = await discoveryService.findDevice(
+          targetDeviceId: targetDeviceId,
+          targetName: targetDeviceName,
+          mode: mode,
         );
-        notifyListeners();
-        return StartupFlowResult.connectionFailed;
+        if (relocated != null && relocated.host != targetHost) {
+          debugPrint(
+            '[ConnectionService] Relocated PC ($targetDeviceName) from $targetHost to ${relocated.host}',
+          );
+          targetHost = relocated.host;
+          targetPort = relocated.port;
+          await secureStorage.saveHost(targetHost);
+          await secureStorage.savePort(targetPort);
+          final updatedConfig =
+              config.copyWith(host: targetHost, port: targetPort);
+          client.configure(updatedConfig);
+          health = await client.checkHealth();
+        }
+
+        if (!health.ok) {
+          _isOrchestrating = false;
+          _errorMessage = health.details ?? health.friendlyHeadline;
+          notifyListeners();
+          return StartupFlowResult.connectionFailed;
+        }
       }
 
       // Step 4: Connect WebSocket (5s timeout)
@@ -465,6 +521,10 @@ class ConnectionService extends ChangeNotifier {
       } else {
         // Stored token was invalid or expired: clear all stored credentials and request re-pairing
         await secureStorage.clearAll();
+        _pairedDevice = null;
+        if (mode != BridgeMode.mock) {
+          _activeDevice = null;
+        }
         _errorMessage = AppErrors.tokenExpired;
         _isManualDisconnect = true;
         await client.disconnect();
@@ -503,7 +563,15 @@ class ConnectionService extends ChangeNotifier {
     );
     if (result.success) {
       _activeDevice = device.copyWith(isPaired: true);
+      _pairedDevice = await secureStorage.getPairedDevice();
       _errorMessage = null;
+
+      if (!pairingService.liveConnectionFailed) {
+        final token = await secureStorage.getToken();
+        if (token != null) {
+          await authService.authenticate(token);
+        }
+      }
     } else {
       _errorMessage = AppErrorMapper.map(
         result.errorMessage ?? AppErrors.pairingFailed,
@@ -543,12 +611,15 @@ class ConnectionService extends ChangeNotifier {
     } catch (_) {}
     await secureStorage.clearAll();
     _activeDevice = null;
+    _pairedDevice = null;
     _errorMessage = null;
     notifyListeners();
   }
 
   @override
   void dispose() {
+    _isDisposed = true;
+    authService.removeListener(_onAuthChanged);
     _resetBackoff();
     _connectionStateSub?.cancel();
     _networkChangeSub?.cancel();

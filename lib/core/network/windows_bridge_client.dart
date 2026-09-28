@@ -19,13 +19,14 @@ abstract class WindowsBridgeClient {
   void configure(BridgeConfig config);
 
   /// Performs a preflight health check probe against GET /health (5s).
-  Future<bool> checkHealth();
+  Future<HealthResult> checkHealth({Duration timeout = const Duration(seconds: 5)});
 
   /// Establishes communication transport with the bridge host using the provided [config].
   Future<void> connect(BridgeConfig config);
 
   /// Performs cryptographic pairing handshake using a 6-digit one-time PIN [code].
-  Future<PairingResponse> pair(String code);
+  Future<PairingResponse> pair(String code, {String? clientId});
+
 
   /// Authenticates an established session using a secure auth [token].
   Future<AuthenticationResponse> authenticate(String token);

@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../../app/routes.dart';
 import '../../../app/theme.dart';
-import '../../../core/constants/app_constants.dart';
 import '../../../core/errors/app_errors.dart';
 import '../../../core/models/models.dart';
 import '../../../core/network/bridge_config_provider.dart';
 import '../../../core/services/connection_service.dart';
+import '../../../core/services/pairing_service.dart';
 
 /// Screen for entering 6-digit pairing PIN displayed on the Windows host console.
 class PairingScreen extends StatefulWidget {
@@ -27,9 +28,12 @@ class _PairingScreenState extends State<PairingScreen> {
   final _formKey = GlobalKey<FormState>();
   bool _isSubmitting = false;
   bool _isPaired = false;
+  bool _liveConnectionFailed = false;
   String? _pairingError;
   bool _isUnreachable = false;
   bool _troubleshootingExpanded = false;
+  bool _detailsExpanded = false;
+  HealthResult? _lastHealthResult;
 
   @override
   void initState() {
@@ -51,6 +55,63 @@ class _PairingScreenState extends State<PairingScreen> {
     super.dispose();
   }
 
+  Future<void> _retryLiveConnection(WindowsDevice device) async {
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    final config = context.read<BridgeConfigProvider>().config;
+    final pairingService = context.read<PairingService>();
+    final ok = await pairingService.retryLiveConnection(
+      device: device,
+      mode: config.mode,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _isSubmitting = false;
+    });
+
+    if (ok) {
+      setState(() {
+        _liveConnectionFailed = false;
+        _isPaired = true;
+      });
+      final palette = context.palette;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '✓ Connected to bridge',
+            style: AppTypography.body.copyWith(color: palette.background),
+          ),
+          backgroundColor: palette.accentGreen,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (mounted) {
+        Navigator.pushNamedAndRemoveUntil(
+          context,
+          AppRoutes.home,
+          (route) => false,
+        );
+      }
+    } else {
+      final palette = context.palette;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Live connection failed. Stored credentials kept.',
+            style: AppTypography.body.copyWith(color: Colors.white),
+          ),
+          backgroundColor: palette.errorRed,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   void _onPairPressed(WindowsDevice device) async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -58,10 +119,14 @@ class _PairingScreenState extends State<PairingScreen> {
       _isSubmitting = true;
       _pairingError = null;
       _isUnreachable = false;
+      _liveConnectionFailed = false;
+      _lastHealthResult = null;
     });
 
     final config = context.read<BridgeConfigProvider>().config;
     final connectionService = context.read<ConnectionService>();
+    final pairingService = context.read<PairingService>();
+
     final response = await connectionService.pair(
       device,
       _pinController.text.trim(),
@@ -75,6 +140,14 @@ class _PairingScreenState extends State<PairingScreen> {
     });
 
     if (response.success) {
+      // Check if WebSocket live connection failed afterwards
+      if (pairingService.liveConnectionFailed) {
+        setState(() {
+          _liveConnectionFailed = true;
+        });
+        return;
+      }
+
       final palette = context.palette;
       setState(() {
         _isPaired = true;
@@ -98,6 +171,7 @@ class _PairingScreenState extends State<PairingScreen> {
         );
       }
     } else {
+      final health = pairingService.lastHealthResult;
       final isWrongPin = response.failure == BridgeFailure.wrongPin ||
           (response.errorMessage != null &&
               (response.errorMessage!.contains("isn't correct") ||
@@ -110,17 +184,22 @@ class _PairingScreenState extends State<PairingScreen> {
                   response.errorMessage!.contains('unreachable')));
 
       setState(() {
-        _isUnreachable = isUnreachable;
+        _isUnreachable = isUnreachable || health != null;
+        _lastHealthResult = health;
+
         if (isWrongPin) {
           _pairingError = AppErrors.wrongPin;
           _pinController.clear();
+        } else if (health != null && !health.ok) {
+          _pairingError = health.friendlyHeadline;
         } else if (isUnreachable) {
           _pairingError = AppErrors.unreachable(device.host);
         } else {
           _pairingError = AppErrorMapper.map(
             response.errorMessage,
             host: device.host,
-            fallback: 'Pairing failed. Please verify the connection and try again.',
+            fallback:
+                'Pairing failed. Please verify the connection and try again.',
           );
         }
       });
@@ -130,18 +209,24 @@ class _PairingScreenState extends State<PairingScreen> {
   @override
   Widget build(BuildContext context) {
     final palette = context.palette;
-    // Resolve device from direct widget property, modal route arguments, or active device in service
     final routeDevice =
         ModalRoute.of(context)?.settings.arguments as WindowsDevice?;
     final device = widget.targetDevice ??
         routeDevice ??
-        context.read<ConnectionService>().activeDevice ??
-        const WindowsDevice(
-          id: 'mock_target',
-          name: 'My Windows PC',
-          host: '127.0.0.1',
-          port: AppConstants.defaultHttpPort,
-        );
+        context.read<ConnectionService>().activeDevice;
+
+    // Never fabricate a mock device. If none passed, redirect to discovery.
+    if (device == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          Navigator.pushReplacementNamed(context, AppRoutes.discovery);
+        }
+      });
+      return Scaffold(
+        backgroundColor: palette.background,
+        body: const Center(),
+      );
+    }
 
     return Scaffold(
       backgroundColor: palette.background,
@@ -208,7 +293,9 @@ class _PairingScreenState extends State<PairingScreen> {
                                   ),
                                 ),
                                 if (device.id.startsWith('mock') ||
-                                    device.name.toUpperCase().contains('SIMULAT')) ...[
+                                    device.name
+                                        .toUpperCase()
+                                        .contains('SIMULAT')) ...[
                                   const SizedBox(width: 8),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
@@ -288,6 +375,84 @@ class _PairingScreenState extends State<PairingScreen> {
                     return null;
                   },
                 ),
+
+                // Live Connection Failed Banner (Task 1)
+                if (_liveConnectionFailed) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    key: const ValueKey('live_connection_failed_banner'),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: palette.card,
+                      borderRadius: BorderRadius.circular(4),
+                      border: Border.all(
+                        color: palette.amberBadge.withValues(alpha: 0.8),
+                        width: 1,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.warning_amber_rounded,
+                              color: palette.amberBadge,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                'Paired, but the live connection failed',
+                                style: AppTypography.sectionHeading.copyWith(
+                                  color: palette.textPrimary,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Your device credentials were saved successfully, but the real-time bridge socket could not connect. Tap RETRY to establish live connection.',
+                          style: AppTypography.mutedMetadata.copyWith(
+                            color: palette.textMuted,
+                            fontSize: 11,
+                            height: 1.3,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            ElevatedButton(
+                              key: const ValueKey('retry_live_connection_btn'),
+                              onPressed: _isSubmitting
+                                  ? null
+                                  : () => _retryLiveConnection(device),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: palette.textPrimary,
+                                foregroundColor: palette.background,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 8,
+                                ),
+                              ),
+                              child: Text(
+                                _isSubmitting ? 'CONNECTING...' : 'RETRY',
+                                style: AppTypography.sectionHeading.copyWith(
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                // Error Banner with Diagnosable Details (Task 2)
                 if (_pairingError != null) ...[
                   const SizedBox(height: 16),
                   Container(
@@ -320,6 +485,7 @@ class _PairingScreenState extends State<PairingScreen> {
                                   color: palette.errorRed,
                                   fontSize: 12,
                                   height: 1.3,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
@@ -355,6 +521,120 @@ class _PairingScreenState extends State<PairingScreen> {
                             ],
                           ],
                         ),
+
+                        // Diagnosable Details (Task 2)
+                        if (_lastHealthResult != null) ...[
+                          const SizedBox(height: 10),
+                          InkWell(
+                            key: const ValueKey('details_toggle_btn'),
+                            onTap: () {
+                              setState(() {
+                                _detailsExpanded = !_detailsExpanded;
+                              });
+                            },
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _detailsExpanded
+                                      ? Icons.keyboard_arrow_up
+                                      : Icons.keyboard_arrow_down,
+                                  size: 16,
+                                  color: palette.textMuted,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Details',
+                                  style: AppTypography.mutedMetadata.copyWith(
+                                    color: palette.textMuted,
+                                    decoration: TextDecoration.underline,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (_detailsExpanded) ...[
+                            const SizedBox(height: 8),
+                            Container(
+                              key: const ValueKey('diagnostics_details_box'),
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: palette.secondary,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: palette.border,
+                                  width: 1,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  if (_lastHealthResult!.details != null)
+                                    Text(
+                                      _lastHealthResult!.details!,
+                                      style: AppTypography.monoConsole.copyWith(
+                                        color: palette.textPrimary,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  if (_lastHealthResult!.subnetHint != null) ...[
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      _lastHealthResult!.subnetHint!,
+                                      style: AppTypography.mutedMetadata.copyWith(
+                                        color: palette.amberBadge,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: OutlinedButton.icon(
+                                      key: const ValueKey('copy_diagnostics_btn'),
+                                      onPressed: () {
+                                        Clipboard.setData(
+                                          ClipboardData(
+                                            text: _lastHealthResult!
+                                                .toDiagnosticString(
+                                              host: device.host,
+                                              port: device.port,
+                                            ),
+                                          ),
+                                        );
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: const Text(
+                                              'Diagnostics copied to clipboard',
+                                            ),
+                                            duration:
+                                                const Duration(seconds: 2),
+                                            backgroundColor: palette.card,
+                                          ),
+                                        );
+                                      },
+                                      icon: const Icon(Icons.copy, size: 13),
+                                      label: const Text('Copy diagnostics'),
+                                      style: OutlinedButton.styleFrom(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                        textStyle:
+                                            AppTypography.mutedMetadata.copyWith(
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+
+                        // Troubleshooting checklist
                         if (_isUnreachable) ...[
                           const SizedBox(height: 10),
                           InkWell(

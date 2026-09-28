@@ -20,7 +20,7 @@ class BridgeConfigProvider extends ChangeNotifier {
     WindowsBridgeClient? client,
   })  : _config = initialConfig ??
             const BridgeConfig(
-              host: '127.0.0.1',
+              host: '',
               port: 7890,
               mode: BridgeMode.dev,
             ),
@@ -28,11 +28,12 @@ class BridgeConfigProvider extends ChangeNotifier {
             BridgeClientFactory.createClient(
               initialConfig ??
                   const BridgeConfig(
-                    host: '127.0.0.1',
+                    host: '',
                     port: 7890,
                     mode: BridgeMode.dev,
                   ),
             );
+
 
   /// Current active configuration.
   BridgeConfig get config => _config;

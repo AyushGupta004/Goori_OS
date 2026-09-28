@@ -14,6 +14,8 @@ class PairingService extends ChangeNotifier {
   bool _isPairing = false;
   String? _errorMessage;
   PairingResponse? _lastResponse;
+  HealthResult? _lastHealthResult;
+  bool _liveConnectionFailed = false;
 
   PairingService({
     required this.client,
@@ -23,10 +25,13 @@ class PairingService extends ChangeNotifier {
   bool get isPairing => _isPairing;
   String? get errorMessage => _errorMessage;
   PairingResponse? get lastResponse => _lastResponse;
+  HealthResult? get lastHealthResult => _lastHealthResult;
+  bool get liveConnectionFailed => _liveConnectionFailed;
 
   /// Executes pairing against [device] using the 6-digit one-time [pinCode].
   ///
-  /// On successful pairing, persists token and device metadata into [SecureStorageService].
+  /// Conforms strictly to Task 1 order:
+  /// configure(config) -> health probe -> POST /pair -> save credentials -> THEN connect WebSocket + authenticate.
   Future<PairingResponse> pairDevice({
     required WindowsDevice device,
     required String pinCode,
@@ -34,9 +39,11 @@ class PairingService extends ChangeNotifier {
   }) async {
     _isPairing = true;
     _errorMessage = null;
+    _liveConnectionFailed = false;
     notifyListeners();
 
     try {
+      // 1. configure(config)
       final config = BridgeConfig(
         host: device.host,
         port: device.port,
@@ -44,16 +51,36 @@ class PairingService extends ChangeNotifier {
       );
       client.configure(config);
 
-      // Connect to bridge endpoint if disconnected
-      if (!client.currentConnectionState.isConnected) {
-        await client.connect(config);
+      // 2. health probe
+      final health = await client.checkHealth();
+      _lastHealthResult = health;
+      if (!health.ok) {
+        _isPairing = false;
+        final failure = (health.kind == HealthResultKind.versionMismatch)
+            ? BridgeFailure.versionMismatch
+            : (health.kind == HealthResultKind.serverError)
+                ? BridgeFailure.serverError
+                : BridgeFailure.unreachable;
+        final errorResponse = PairingResponse(
+          success: false,
+          deviceId: health.deviceId ?? '',
+          failure: failure,
+          errorMessage: health.details ?? health.friendlyHeadline,
+          protocolVersion: health.protocolVersion ?? '1.0',
+        );
+        _errorMessage = errorResponse.errorMessage;
+        _lastResponse = errorResponse;
+        notifyListeners();
+        return errorResponse;
       }
 
-      final response = await client.pair(pinCode);
+      // 3. POST /pair (over HTTP only) with stable clientId
+      final clientId = await secureStorage.getOrCreateClientId();
+      final response = await client.pair(pinCode, clientId: clientId);
       _lastResponse = response;
 
       if (response.success && response.sessionToken != null) {
-        // Persist token exclusively into SecureStorage
+        // 4. Save credentials into SecureStorage
         await secureStorage.saveConnectionInfo(
           host: device.host,
           port: device.port,
@@ -62,10 +89,30 @@ class PairingService extends ChangeNotifier {
           token: response.sessionToken!,
         );
         _errorMessage = null;
+
+        // 5. THEN connect WebSocket + authenticate
+        try {
+          await client.connect(config);
+          final auth = await client.authenticate(response.sessionToken!);
+          if (!auth.authenticated) {
+            _liveConnectionFailed = true;
+            _errorMessage = 'Paired, but the live connection failed';
+          }
+        } catch (wsError) {
+          debugPrint(
+            '[PairingService] WebSocket connection failed after pairing: $wsError',
+          );
+          // Keep credentials! Never clear token and never call this "Can't reach your PC"
+          _liveConnectionFailed = true;
+          _errorMessage = 'Paired, but the live connection failed';
+        }
       } else {
         _errorMessage = response.errorMessage != null
             ? AppErrorMapper.map(response.errorMessage, host: device.host)
-            : AppErrorMapper.mapFailure(response.failure ?? BridgeFailure.wrongPin, host: device.host);
+            : AppErrorMapper.mapFailure(
+                response.failure ?? BridgeFailure.wrongPin,
+                host: device.host,
+              );
       }
 
       _isPairing = false;
@@ -88,10 +135,61 @@ class PairingService extends ChangeNotifier {
     }
   }
 
+  /// Retries the live WebSocket connection using previously saved credentials.
+  Future<bool> retryLiveConnection({
+    required WindowsDevice device,
+    BridgeMode mode = BridgeMode.dev,
+  }) async {
+    _isPairing = true;
+    notifyListeners();
+
+    try {
+      final config = BridgeConfig(
+        host: device.host,
+        port: device.port,
+        mode: mode,
+      );
+      client.configure(config);
+
+      final token = await secureStorage.getToken();
+      if (token == null || token.isEmpty) {
+        _isPairing = false;
+        _errorMessage = 'No saved session token found. Please re-pair.';
+        notifyListeners();
+        return false;
+      }
+
+      await client.connect(config);
+      final auth = await client.authenticate(token);
+      if (auth.authenticated) {
+        _liveConnectionFailed = false;
+        _errorMessage = null;
+        _isPairing = false;
+        notifyListeners();
+        return true;
+      } else {
+        _liveConnectionFailed = true;
+        _errorMessage = 'Paired, but the live connection failed';
+        _isPairing = false;
+        notifyListeners();
+        return false;
+      }
+    } catch (e) {
+      _liveConnectionFailed = true;
+      _errorMessage = 'Paired, but the live connection failed';
+      _isPairing = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
   void reset() {
     _isPairing = false;
     _errorMessage = null;
     _lastResponse = null;
+    _lastHealthResult = null;
+    _liveConnectionFailed = false;
     notifyListeners();
   }
+
 }

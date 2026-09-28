@@ -8,8 +8,10 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../constants/app_constants.dart';
 import '../errors/app_errors.dart';
 import '../models/models.dart';
+import '../utils/subnet_util.dart';
 import 'config.dart';
 import 'windows_bridge_client.dart';
+
 
 /// Production-ready client implementing [WindowsBridgeClient] over real WebSocket and HTTP transports.
 ///
@@ -69,17 +71,236 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
     _activeConfig = config;
   }
 
+  HealthResultKind _classifySocketException(SocketException e) {
+    final code = e.osError?.errorCode;
+    if (code == 110 || code == 10060) {
+      return HealthResultKind.timeout;
+    }
+    if (code == 111 || code == 10061) {
+      return HealthResultKind.refused;
+    }
+    if (code == 101 || code == 113 || code == 10051 || code == 10065) {
+      return HealthResultKind.noRoute;
+    }
+    final msg = '${e.message} ${e.osError?.message ?? ''}'.toLowerCase();
+    if (msg.contains('timed out') || msg.contains('timeout')) {
+      return HealthResultKind.timeout;
+    }
+    if (msg.contains('refused')) {
+      return HealthResultKind.refused;
+    }
+    if (msg.contains('no route') ||
+        msg.contains('unreachable') ||
+        msg.contains('network is down')) {
+      return HealthResultKind.noRoute;
+    }
+    return HealthResultKind.unknown;
+  }
+
+  String _formatSocketErrorDetails(
+    HealthResultKind kind,
+    String host,
+    int port,
+    Duration elapsed,
+  ) {
+    switch (kind) {
+      case HealthResultKind.timeout:
+        final sec = elapsed.inSeconds > 0 ? elapsed.inSeconds : 5;
+        return 'Timed out after ${sec}s connecting to $host:$port';
+      case HealthResultKind.refused:
+        return 'Connection refused by $host:$port. Make sure the Windows bridge is running.';
+      case HealthResultKind.noRoute:
+        return 'No route to $host:$port. Check your Wi-Fi connection.';
+      default:
+        return 'Unable to establish socket connection to $host:$port';
+    }
+  }
+
   @override
-  Future<bool> checkHealth() async {
-    if (_activeConfig == null) return false;
+  Future<HealthResult> checkHealth({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    if (_activeConfig == null || !_activeConfig!.hasHost) {
+      return const HealthResult(
+        ok: false,
+        kind: HealthResultKind.noRoute,
+        details: 'No Windows host configured',
+      );
+    }
+
+    final host = _activeConfig!.host;
+    final port = _activeConfig!.port;
+    final stopwatch = Stopwatch()..start();
+    final subnetHint = await SubnetUtil.checkSubnetMismatch(host);
+
     try {
       final healthUri = Uri.parse('${_activeConfig!.httpBaseUrl}/health');
-      final response = await _httpClient.get(healthUri).timeout(const Duration(seconds: 5));
-      return response.statusCode == 200;
+      final response = await _httpClient.get(healthUri).timeout(timeout);
+      stopwatch.stop();
+
+      if (response.statusCode == 200) {
+        try {
+          final json = jsonDecode(response.body);
+          if (json is Map<String, dynamic>) {
+            final deviceName = json['device_name'] as String? ??
+                json['deviceName'] as String? ??
+                json['name'] as String?;
+            final deviceId = json['device_id'] as String? ??
+                json['deviceId'] as String?;
+            final protocolVersion = json['protocol_version'] as String? ??
+                json['protocolVersion'] as String?;
+            final version = protocolVersion ?? '1.0';
+            final wsUrlsRaw = json['ws_urls'] ?? json['wsUrls'];
+            final wsUrls = <String>[];
+            if (wsUrlsRaw is List) {
+              for (final u in wsUrlsRaw) {
+                if (u is String) wsUrls.add(u);
+              }
+            }
+            if (wsUrls.isEmpty) {
+              wsUrls.addAll([
+                _activeConfig!.primaryWsUrl,
+                _activeConfig!.fallbackWsUrl,
+              ]);
+            }
+
+            if (protocolVersion != null &&
+                protocolVersion.isNotEmpty &&
+                !protocolVersion.startsWith('1.')) {
+              return HealthResult.failure(
+                kind: HealthResultKind.versionMismatch,
+                elapsedTime: stopwatch.elapsed,
+                protocolVersion: protocolVersion,
+                details:
+                    'Bridge at $host:$port is running incompatible protocol version $protocolVersion',
+                subnetHint: subnetHint,
+              );
+            }
+
+            return HealthResult.success(
+              elapsedTime: stopwatch.elapsed,
+              deviceName: deviceName,
+              deviceId: deviceId,
+              protocolVersion: version,
+              wsUrls: wsUrls,
+            );
+          } else {
+            return HealthResult.failure(
+              kind: HealthResultKind.notABridge,
+              elapsedTime: stopwatch.elapsed,
+              details:
+                  "Something answered at $host:$port, but it isn't the Windows bridge. Make sure the latest bridge is running.",
+              subnetHint: subnetHint,
+            );
+          }
+        } catch (_) {
+          return HealthResult.failure(
+            kind: HealthResultKind.notABridge,
+            elapsedTime: stopwatch.elapsed,
+            details:
+                "Something answered at $host:$port, but it isn't the Windows bridge. Make sure the latest bridge is running.",
+            subnetHint: subnetHint,
+          );
+        }
+      } else if (response.statusCode == 404) {
+        // Fallback probe against /api/status for companion bridge compatibility
+        try {
+          final statusUri =
+              Uri.parse('${_activeConfig!.httpBaseUrl}/api/status');
+          final statusResp =
+              await _httpClient.get(statusUri).timeout(const Duration(seconds: 2));
+          if (statusResp.statusCode == 200) {
+            final json = jsonDecode(statusResp.body);
+            if (json is Map<String, dynamic> &&
+                (json['status'] == 'online' ||
+                    json.containsKey('device_id') ||
+                    json.containsKey('protocol_version'))) {
+              return HealthResult.success(
+                elapsedTime: stopwatch.elapsed,
+                deviceName: json['device_name'] as String? ??
+                    json['name'] as String?,
+                deviceId: json['device_id'] as String?,
+                protocolVersion:
+                    json['protocol_version'] as String? ?? '1.0',
+                wsUrls: [
+                  _activeConfig!.primaryWsUrl,
+                  _activeConfig!.fallbackWsUrl,
+                ],
+              );
+            }
+          }
+        } catch (_) {}
+
+        return HealthResult.failure(
+          kind: HealthResultKind.notABridge,
+          elapsedTime: stopwatch.elapsed,
+          details:
+              "Something answered at $host:$port, but it isn't the Windows bridge. Make sure the latest bridge is running.",
+          subnetHint: subnetHint,
+        );
+      } else if (response.statusCode >= 500) {
+        return HealthResult.failure(
+          kind: HealthResultKind.serverError,
+          elapsedTime: stopwatch.elapsed,
+          details:
+              'Windows bridge returned server error (HTTP ${response.statusCode})',
+          subnetHint: subnetHint,
+        );
+      } else {
+        return HealthResult.failure(
+          kind: HealthResultKind.notABridge,
+          elapsedTime: stopwatch.elapsed,
+          details:
+              "Something answered at $host:$port, but it isn't the Windows bridge. Make sure the latest bridge is running.",
+          subnetHint: subnetHint,
+        );
+      }
+    } on TimeoutException {
+      stopwatch.stop();
+      final sec = stopwatch.elapsed.inSeconds > 0
+          ? stopwatch.elapsed.inSeconds
+          : timeout.inSeconds;
+      return HealthResult.failure(
+        kind: HealthResultKind.timeout,
+        elapsedTime: stopwatch.elapsed,
+        details: 'Timed out after ${sec}s connecting to $host:$port',
+        subnetHint: subnetHint,
+      );
+    } on SocketException catch (e) {
+      stopwatch.stop();
+      final kind = _classifySocketException(e);
+      return HealthResult.failure(
+        kind: kind,
+        elapsedTime: stopwatch.elapsed,
+        details: _formatSocketErrorDetails(kind, host, port, stopwatch.elapsed),
+        subnetHint: subnetHint,
+      );
     } catch (e) {
-      debugPrint('[RealWindowsBridgeClient] Health check failed for ${_activeConfig?.httpBaseUrl}: $e');
-      return false;
+      stopwatch.stop();
+      return HealthResult.failure(
+        kind: HealthResultKind.unknown,
+        elapsedTime: stopwatch.elapsed,
+        details: 'Unable to reach $host:$port',
+        subnetHint: subnetHint,
+      );
     }
+  }
+
+  Future<void> _attemptWsConnect(Uri wsUri) async {
+    _wsChannel = WebSocketChannel.connect(wsUri);
+    await _wsChannel!.ready.timeout(const Duration(seconds: 5));
+
+    _wsSubscription = _wsChannel!.stream.listen(
+      _handleWebSocketMessage,
+      onError: (error) {
+        _emitState(ConnectionState.disconnected);
+      },
+      onDone: () {
+        _emitState(ConnectionState.disconnected);
+      },
+    );
+
+    _emitState(ConnectionState.connected);
   }
 
   @override
@@ -87,27 +308,36 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
     _activeConfig = config;
     _emitState(ConnectionState.connecting);
 
+    final primaryUri = Uri.parse(config.primaryWsUrl);
+    final fallbackUri = Uri.parse(config.fallbackWsUrl);
+
     try {
-      final wsUri = Uri.parse(config.wsBaseUrl);
-      _wsChannel = WebSocketChannel.connect(wsUri);
-      await _wsChannel!.ready.timeout(const Duration(seconds: 5));
-
-      _wsSubscription = _wsChannel!.stream.listen(
-        _handleWebSocketMessage,
-        onError: (error) {
-          _emitState(ConnectionState.disconnected);
-        },
-        onDone: () {
-          _emitState(ConnectionState.disconnected);
-        },
-      );
-
-      _emitState(ConnectionState.connected);
+      await _attemptWsConnect(primaryUri);
+      return;
     } catch (e) {
+      debugPrint(
+        '[RealWindowsBridgeClient] Primary WS connect failed ($primaryUri): $e',
+      );
+      if (primaryUri == fallbackUri) {
+        _emitState(ConnectionState.disconnected);
+        rethrow;
+      }
+    }
+
+    try {
+      debugPrint(
+        '[RealWindowsBridgeClient] Attempting fallback WS connect ($fallbackUri)...',
+      );
+      await _attemptWsConnect(fallbackUri);
+    } catch (e) {
+      debugPrint(
+        '[RealWindowsBridgeClient] Fallback WS connect failed ($fallbackUri): $e',
+      );
       _emitState(ConnectionState.disconnected);
       rethrow;
     }
   }
+
 
   void _handleWebSocketMessage(dynamic rawMessage) {
     try {
@@ -200,8 +430,8 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
   }
 
   @override
-  Future<PairingResponse> pair(String code) async {
-    if (_activeConfig == null) {
+  Future<PairingResponse> pair(String code, {String? clientId}) async {
+    if (_activeConfig == null || !_activeConfig!.hasHost) {
       return PairingResponse(
         success: false,
         deviceId: '',
@@ -211,21 +441,25 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
       );
     }
 
-    // Step 1: Preflight health check (5s timeout)
-    final isHealthy = await checkHealth();
-    if (!isHealthy) {
+    // Step 1: Preflight health probe (5s timeout)
+    final health = await checkHealth();
+    if (!health.ok) {
       debugPrint(
-        '[RealWindowsBridgeClient] Pre-pair health check failed for ${_activeConfig!.httpBaseUrl}',
+        '[RealWindowsBridgeClient] Pre-pair health check failed for ${_activeConfig!.httpBaseUrl}: ${health.details}',
       );
+      final failure = (health.kind == HealthResultKind.versionMismatch)
+          ? BridgeFailure.versionMismatch
+          : (health.kind == HealthResultKind.serverError)
+              ? BridgeFailure.serverError
+              : BridgeFailure.unreachable;
+
       return PairingResponse(
         success: false,
-        deviceId: '',
-        failure: BridgeFailure.unreachable,
-        errorMessage: AppErrorMapper.mapFailure(
-          BridgeFailure.unreachable,
-          host: _activeConfig!.host,
-        ),
-        protocolVersion: _activeConfig!.protocolVersion,
+        deviceId: health.deviceId ?? '',
+        failure: failure,
+        errorMessage: health.details ?? health.friendlyHeadline,
+        protocolVersion:
+            health.protocolVersion ?? _activeConfig!.protocolVersion,
       );
     }
 
@@ -242,9 +476,11 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
             body: jsonEncode({
               'code': code.trim(),
               'protocolVersion': _activeConfig!.protocolVersion,
+              if (clientId != null && clientId.isNotEmpty) 'clientId': clientId,
             }),
           )
           .timeout(const Duration(seconds: 10));
+
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -303,7 +539,16 @@ class RealWindowsBridgeClient implements WindowsBridgeClient {
     if (statusCode >= 500) {
       return BridgeFailure.serverError;
     }
-    if (lower.contains('version') || lower.contains('incompatible')) {
+    if (lower.contains('invalid') ||
+        lower.contains('pin') ||
+        lower.contains('wrong') ||
+        lower.contains('code')) {
+      return BridgeFailure.wrongPin;
+    }
+    if (lower.contains('version_mismatch') ||
+        lower.contains('version mismatch') ||
+        lower.contains('incompatible') ||
+        lower.contains('unsupported_version')) {
       return BridgeFailure.versionMismatch;
     }
     if (lower.contains('expired')) {

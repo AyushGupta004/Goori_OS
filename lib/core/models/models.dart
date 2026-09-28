@@ -10,3 +10,5 @@ export 'windows_device.dart';
 export 'command_history_item.dart';
 export 'file_transfer_task.dart';
 export 'photo_transfer_item.dart';
+export 'health_result.dart';
+export 'paired_device.dart';

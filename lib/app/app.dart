@@ -13,6 +13,7 @@ import 'theme.dart';
 
 /// Root Application Widget configuring dependency injection, dark theme, and routes.
 class WindowsRemoteApp extends StatelessWidget {
+  final String? initialRoute;
   final BridgeConfigProvider? configProvider;
   final SecureStorageService? secureStorage;
   final DiscoveryService? discoveryService;
@@ -31,6 +32,7 @@ class WindowsRemoteApp extends StatelessWidget {
 
   const WindowsRemoteApp({
     super.key,
+    this.initialRoute,
     this.configProvider,
     this.secureStorage,
     this.discoveryService,
@@ -159,7 +161,7 @@ class WindowsRemoteApp extends StatelessWidget {
             themeMode: settings.themeMode == AppThemeMode.light
                 ? ThemeMode.light
                 : ThemeMode.dark,
-            initialRoute: AppRoutes.home,
+            initialRoute: initialRoute ?? AppRoutes.startup,
             routes: AppRoutes.routes,
             onGenerateRoute: AppRoutes.onGenerateRoute,
           );

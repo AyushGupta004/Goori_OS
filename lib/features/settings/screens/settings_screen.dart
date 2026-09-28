@@ -84,7 +84,11 @@ class SettingsScreen extends StatelessWidget {
     if (confirmed != true || !context.mounted) return;
 
     final connectionService = context.read<ConnectionService>();
+    final configProvider = context.read<BridgeConfigProvider>();
     await connectionService.unpair();
+    await configProvider.updateConfig(
+      configProvider.config.copyWith(host: ''),
+    );
 
     if (!context.mounted) return;
 
@@ -136,13 +140,25 @@ class SettingsScreen extends StatelessWidget {
     final historyService = context.watch<CommandHistoryService>();
 
     final activeDevice = connectionService.activeDevice;
+    final pairedDevice = connectionService.pairedDevice;
+    final isMock = configProvider.config.mode == BridgeMode.mock;
+    final isPaired = connectionService.isPaired ||
+        activeDevice != null ||
+        (isMock && configProvider.config.hasHost);
     final state = connectionService.currentState;
     final isConnected = state.isConnected;
     final isTransitioning = state.isTransitioning;
 
-    final deviceName = activeDevice?.name ?? 'My Windows PC';
-    final host = activeDevice?.host ?? configProvider.config.host;
-    final port = activeDevice?.port ?? configProvider.config.port;
+    final deviceName = activeDevice?.name ??
+        pairedDevice?.deviceName ??
+        (isMock ? 'My Windows PC' : '');
+    final host = activeDevice?.host ??
+        pairedDevice?.host ??
+        (isMock && configProvider.config.host.isEmpty ? '127.0.0.1' : configProvider.config.host);
+    final port = activeDevice?.port ??
+        pairedDevice?.port ??
+        configProvider.config.port;
+    final pairedSince = pairedDevice?.formattedPairedSince;
 
     return Scaffold(
       key: const ValueKey('settings_screen'),
@@ -178,45 +194,74 @@ class SettingsScreen extends StatelessWidget {
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(color: palette.border, width: 1),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildTelemetryRow(
-                    label: 'DEVICE NAME',
-                    value: deviceName,
-                    valueKey: 'settings_device_name',
-                    palette: palette,
-                  ),
-                  const Divider(height: 20),
-                  _buildTelemetryRow(
-                    label: 'IP ADDRESS',
-                    value: '$host:$port',
-                    valueKey: 'settings_ip_address',
-                    palette: palette,
-                  ),
-                  const Divider(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'STATUS',
-                        style: AppTypography.mutedMetadata.copyWith(
-                          color: palette.textMuted,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
+              child: isPaired
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildTelemetryRow(
+                          label: 'DEVICE NAME',
+                          value: deviceName,
+                          valueKey: 'settings_device_name',
+                          palette: palette,
                         ),
-                      ),
-                      _buildLiveStatusBadge(isConnected, isTransitioning, palette),
-                    ],
-                  ),
-                ],
-              ),
+                        const Divider(height: 20),
+                        _buildTelemetryRow(
+                          label: 'IP ADDRESS',
+                          value: '$host:$port',
+                          valueKey: 'settings_ip_address',
+                          palette: palette,
+                        ),
+                        const Divider(height: 20),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'STATUS',
+                              style: AppTypography.mutedMetadata.copyWith(
+                                color: palette.textMuted,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            _buildLiveStatusBadge(
+                                isConnected, isTransitioning, palette),
+                          ],
+                        ),
+                        if (pairedSince != null) ...[
+                          const Divider(height: 20),
+                          _buildTelemetryRow(
+                            label: 'PAIRED SINCE',
+                            value: pairedSince,
+                            valueKey: 'settings_paired_since',
+                            palette: palette,
+                          ),
+                        ],
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        Icon(
+                          Icons.computer_outlined,
+                          color: palette.textMuted,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          'No PC paired',
+                          key: const ValueKey('settings_no_pc_paired_text'),
+                          style: AppTypography.body.copyWith(
+                            color: palette.textMuted,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
             ),
 
             const SizedBox(height: 24),
 
             // -----------------------------------------------------------------
-            // SECTION 2: PAIRING (Unpair Device with Confirmation)
+            // SECTION 2: PAIRING (Unpair Device OR Find My PC)
             // -----------------------------------------------------------------
             _buildSectionHeader('PAIRING', palette),
             const SizedBox(height: 8),
@@ -228,58 +273,93 @@ class SettingsScreen extends StatelessWidget {
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(color: palette.border, width: 1),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.shield_outlined,
-                        size: 20,
-                        color: palette.textPrimary,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+              child: isPaired
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
                           children: [
-                            Text(
-                              'Device Authentication',
-                              style: AppTypography.sectionHeading.copyWith(
-                                color: palette.textPrimary,
-                                fontSize: 13,
-                              ),
+                            Icon(
+                              Icons.shield_outlined,
+                              size: 20,
+                              color: palette.textPrimary,
                             ),
-                            const SizedBox(height: 2),
-                            Text(
-                              'Manage trusted pairing PIN and session security.',
-                              style: AppTypography.mutedMetadata.copyWith(
-                                color: palette.textMuted,
-                                fontSize: 11,
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Device Authentication',
+                                    style: AppTypography.sectionHeading.copyWith(
+                                      color: palette.textPrimary,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Manage trusted pairing PIN and session security.',
+                                    style: AppTypography.mutedMetadata.copyWith(
+                                      color: palette.textMuted,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  OutlinedButton.icon(
-                    key: const ValueKey('unpair_device_btn'),
-                    onPressed: () => _confirmAndUnpair(context),
-                    icon: const Icon(Icons.link_off_rounded, size: 18),
-                    label: const Text('UNPAIR DEVICE'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: palette.errorRed,
-                      side: BorderSide(color: palette.errorRed, width: 1),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(4),
-                      ),
+                        const SizedBox(height: 16),
+                        OutlinedButton.icon(
+                          key: const ValueKey('unpair_device_btn'),
+                          onPressed: () => _confirmAndUnpair(context),
+                          icon: const Icon(Icons.link_off_rounded, size: 18),
+                          label: const Text('UNPAIR DEVICE'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: palette.errorRed,
+                            side: BorderSide(color: palette.errorRed, width: 1),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'Not paired',
+                          style: AppTypography.sectionHeading.copyWith(
+                            color: palette.textPrimary,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'No Windows PC is currently paired with this device.',
+                          style: AppTypography.mutedMetadata.copyWith(
+                            color: palette.textMuted,
+                            fontSize: 11,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        ElevatedButton.icon(
+                          key: const ValueKey('find_my_pc_btn'),
+                          onPressed: () {
+                            Navigator.pushNamed(context, AppRoutes.discovery);
+                          },
+                          icon: const Icon(Icons.search_rounded, size: 18),
+                          label: const Text('FIND MY PC'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: palette.textPrimary,
+                            foregroundColor: palette.background,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
             ),
 
             const SizedBox(height: 24),

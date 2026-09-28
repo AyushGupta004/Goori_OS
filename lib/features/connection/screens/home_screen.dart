@@ -5,6 +5,7 @@ import '../../../app/routes.dart';
 import '../../../app/shell.dart';
 import '../../../app/theme.dart';
 import '../../../core/network/bridge_config_provider.dart';
+import '../../../core/network/config.dart';
 import '../../../core/services/command_service.dart';
 import '../../../core/services/connection_service.dart';
 import '../../../core/storage/secure_storage_service.dart';
@@ -70,11 +71,15 @@ class _HomeScreenState extends State<HomeScreen> {
           duration: const Duration(seconds: 3),
         ),
       );
-      Navigator.pushNamed(
-        context,
-        AppRoutes.pairing,
-        arguments: connectionService.activeDevice,
-      );
+      if (connectionService.activeDevice != null) {
+        Navigator.pushNamed(
+          context,
+          AppRoutes.pairing,
+          arguments: connectionService.activeDevice,
+        );
+      } else {
+        Navigator.pushReplacementNamed(context, AppRoutes.discovery);
+      }
     }
   }
 
@@ -98,6 +103,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final palette = context.palette;
     final connectionService = context.watch<ConnectionService>();
     final commandService = context.watch<CommandService>();
+    final configProvider = context.watch<BridgeConfigProvider>();
+    final isMock = configProvider.config.mode == BridgeMode.mock;
+    final isPaired = connectionService.isPaired ||
+        connectionService.activeDevice != null ||
+        (isMock && configProvider.config.hasHost);
     final state = connectionService.currentState;
     final isConnected = state.isConnected;
     final isTransitioning = state.isTransitioning;
@@ -133,23 +143,26 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 1. Status Block: "WINDOWS / {device name} / ● Connected"
-              _buildStatusBlock(connectionService, palette),
-
-              // 2. Offline State Card (when disconnected) with [RETRY] button
-              if (!isConnected && !isTransitioning) ...[
-                const SizedBox(height: 12),
-                _buildOfflineCard(connectionService, palette),
+              // 1. Status Block: Unpaired Empty State OR Connected Status Block
+              if (!isPaired)
+                _buildUnpairedBlock(context, palette)
+              else ...[
+                _buildStatusBlock(connectionService, configProvider, palette),
+                // 2. Offline State Card (when paired but disconnected) with [RETRY] button
+                if (!isConnected && !isTransitioning) ...[
+                  const SizedBox(height: 12),
+                  _buildOfflineCard(connectionService, configProvider, palette),
+                ],
               ],
 
               const SizedBox(height: 18),
 
-              // 3. Primary visual focus: Large centered microphone button
+              // 3. Primary visual focus: Large centered microphone button (disabled when unpaired)
               Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _buildMicButton(context, isConnected, palette),
+                    _buildMicButton(context, isPaired && isConnected, palette),
                     const SizedBox(height: 10),
                     Text(
                       'Tap to give a command',
@@ -188,16 +201,71 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Empty state shown on Home when no PC is paired (Task 5).
+  Widget _buildUnpairedBlock(BuildContext context, AppPalette palette) {
+    return Container(
+      key: const ValueKey('home_unpaired_block'),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: palette.card,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: palette.border, width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.cloud_off_outlined,
+            color: palette.textMuted,
+            size: 18,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'No PC connected',
+              style: AppTypography.monoConsole.copyWith(
+                color: palette.textMuted,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            key: const ValueKey('home_connect_link'),
+            onPressed: () => Navigator.pushNamed(context, AppRoutes.discovery),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: palette.textPrimary,
+              foregroundColor: palette.background,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              minimumSize: Size.zero,
+            ),
+            child: Text(
+              'CONNECT TO PC',
+              style: AppTypography.sectionHeading.copyWith(
+                fontSize: 11,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Subtle real-time status block matching exact specification:
-  /// "WINDOWS / {device name} / ● Connected" (small, subtle indicator; never a big banner;
-  /// connecting = hollow circle, disconnected = red/gray dot).
+  /// "WINDOWS / {device name} / ● Connected"
   Widget _buildStatusBlock(
-      ConnectionService connectionService, AppPalette palette) {
+      ConnectionService connectionService,
+      BridgeConfigProvider configProvider,
+      AppPalette palette) {
     final state = connectionService.currentState;
     final isConnected = state.isConnected;
     final isTransitioning = state.isTransitioning;
+    final isMock = configProvider.config.mode == BridgeMode.mock;
     final activeDevice = connectionService.activeDevice;
-    final deviceName = activeDevice?.name ?? 'My Windows PC';
+    final pairedDevice = connectionService.pairedDevice;
+    final deviceName = activeDevice?.name ??
+        pairedDevice?.deviceName ??
+        (isMock ? 'My Windows PC' : '');
 
     final Widget dotWidget;
     final String statusText;
@@ -328,8 +396,17 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Offline state card showing connection failure and [RETRY] button
   /// while keeping the rest of the application fully usable.
   Widget _buildOfflineCard(
-      ConnectionService connectionService, AppPalette palette) {
+      ConnectionService connectionService,
+      BridgeConfigProvider configProvider,
+      AppPalette palette) {
     final activeDevice = connectionService.activeDevice;
+    final pairedDevice = connectionService.pairedDevice;
+    final host = activeDevice?.host ??
+        pairedDevice?.host ??
+        configProvider.config.host;
+    final port = activeDevice?.port ??
+        pairedDevice?.port ??
+        configProvider.config.port;
 
     return Container(
       key: const ValueKey('offline_state_card'),
@@ -362,8 +439,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 2),
                 Text(
                   connectionService.errorMessage ??
-                      (activeDevice != null
-                          ? 'Cannot reach ${activeDevice.host}:${activeDevice.port}'
+                      (host.isNotEmpty
+                          ? 'Cannot reach $host:$port'
                           : 'Bridge host is disconnected or unreachable.'),
                   key: const ValueKey('home_offline_card_message'),
                   style: AppTypography.mutedMetadata.copyWith(

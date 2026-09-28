@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../constants/app_constants.dart';
@@ -16,11 +17,19 @@ class AuthenticationService extends ChangeNotifier {
   bool _isAuthenticated = false;
   String? _errorMessage;
   AuthenticationResponse? _lastResponse;
+  StreamSubscription<ConnectionState>? _connectionStateSub;
 
   AuthenticationService({
     required this.client,
     required this.secureStorage,
-  });
+  }) {
+    _connectionStateSub = client.connectionState.listen((state) {
+      if (state == ConnectionState.disconnected && _isAuthenticated) {
+        _isAuthenticated = false;
+        notifyListeners();
+      }
+    });
+  }
 
   bool get isAuthenticating => _isAuthenticating;
   bool get isAuthenticated => _isAuthenticated;
@@ -102,5 +111,11 @@ class AuthenticationService extends ChangeNotifier {
     _lastResponse = null;
     await client.disconnect();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _connectionStateSub?.cancel();
+    super.dispose();
   }
 }
