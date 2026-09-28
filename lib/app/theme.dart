@@ -25,6 +25,7 @@ class AppPalette {
   final Color textMuted;
   final Color accentGreen;
   final Color errorRed;
+  final Color amberBadge;
 
   const AppPalette({
     required this.background,
@@ -35,6 +36,7 @@ class AppPalette {
     required this.textMuted,
     required this.accentGreen,
     required this.errorRed,
+    this.amberBadge = const Color(0xFFFFB300),
   });
 
   /// Deep OLED black console palette.
@@ -47,6 +49,7 @@ class AppPalette {
     textMuted: Color(0xFF9A9A9A),
     accentGreen: Color(0xFF7CFF6B),
     errorRed: Color(0xFFFF3B30),
+    amberBadge: Color(0xFFFFB300),
   );
 
   /// Clean, high-contrast white command-console palette.
@@ -60,6 +63,7 @@ class AppPalette {
     textMuted: Color(0xFF71717A),
     accentGreen: Color(0xFF15803D),
     errorRed: Color(0xFFDC2626),
+    amberBadge: Color(0xFFD97706),
   );
 
   /// Obtains the active [AppPalette] given the current [BuildContext].
@@ -103,6 +107,9 @@ class AppColors {
 
   /// Functional error red (#FF3B30) — reserved exclusively for errors and failures.
   static const Color errorRed = Color(0xFFFF3B30);
+
+  /// Functional amber warning badge color (#FFB300).
+  static const Color amberBadge = Color(0xFFFFB300);
 
   /// Theme-reactive palette accessor.
   static AppPalette of(BuildContext context) => AppPalette.of(context);

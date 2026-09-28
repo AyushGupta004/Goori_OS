@@ -586,6 +586,95 @@ class SettingsScreen extends StatelessWidget {
                 ],
               ),
             ),
+            const SizedBox(height: 24),
+
+            // -----------------------------------------------------------------
+            // SECTION 6: DEVELOPER (Gated simulated bridge toggle)
+            // -----------------------------------------------------------------
+            _buildSectionHeader('DEVELOPER', palette),
+            const SizedBox(height: 8),
+            Container(
+              key: const ValueKey('developer_section'),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: palette.card,
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: configProvider.config.mode == BridgeMode.mock
+                      ? palette.amberBadge
+                      : palette.border,
+                  width: 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Material(
+                    color: Colors.transparent,
+                    child: SwitchListTile(
+                      key: const ValueKey('developer_simulated_bridge_toggle'),
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        'Use simulated bridge (testing only)',
+                        style: AppTypography.sectionHeading.copyWith(
+                          fontSize: 12,
+                          color: palette.textPrimary,
+                        ),
+                      ),
+                      subtitle: Text(
+                        'Bypasses real network discovery and simulates a local test PC. Off by default.',
+                        style: AppTypography.mutedMetadata.copyWith(
+                          color: palette.textMuted,
+                          fontSize: 11,
+                        ),
+                      ),
+                      value: configProvider.config.mode == BridgeMode.mock,
+                      activeThumbColor: palette.amberBadge,
+                      activeTrackColor: palette.amberBadge.withValues(alpha: 0.3),
+                      onChanged: (bool enabled) {
+                        configProvider.updateConfig(
+                          configProvider.config.copyWith(
+                            mode: enabled ? BridgeMode.mock : BridgeMode.dev,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  if (configProvider.config.mode == BridgeMode.mock) ...[
+                    const Divider(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: palette.amberBadge.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: palette.amberBadge.withValues(alpha: 0.4),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.info_outline,
+                            size: 16,
+                            color: palette.amberBadge,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Simulated bridge is active. Discovered devices will be badged (SIMULATED).',
+                              style: AppTypography.mutedMetadata.copyWith(
+                                color: palette.amberBadge,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
             const SizedBox(height: 20),
           ],
         ),

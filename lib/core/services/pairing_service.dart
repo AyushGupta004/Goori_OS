@@ -29,7 +29,7 @@ class PairingService extends ChangeNotifier {
   Future<PairingResponse> pairDevice({
     required WindowsDevice device,
     required String pinCode,
-    BridgeMode mode = BridgeMode.mock,
+    BridgeMode mode = BridgeMode.dev,
   }) async {
     _isPairing = true;
     _errorMessage = null;

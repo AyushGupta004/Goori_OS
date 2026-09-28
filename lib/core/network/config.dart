@@ -10,7 +10,7 @@ enum BridgeMode {
   static BridgeMode fromString(String value) {
     return BridgeMode.values.firstWhere(
       (e) => e.name.toLowerCase() == value.toLowerCase(),
-      orElse: () => BridgeMode.mock,
+      orElse: () => BridgeMode.dev,
     );
   }
 
@@ -33,7 +33,7 @@ class BridgeConfig {
     required this.port,
     this.wsPort,
     this.protocolVersion = AppConstants.protocolVersion,
-    this.mode = BridgeMode.mock,
+    this.mode = BridgeMode.dev,
     this.useTls = false,
   });
 
@@ -49,7 +49,7 @@ class BridgeConfig {
       wsPort: wsPort,
       protocolVersion:
           json['protocolVersion'] as String? ?? AppConstants.protocolVersion,
-      mode: BridgeMode.fromString(json['mode'] as String? ?? 'mock'),
+      mode: BridgeMode.fromString(json['mode'] as String? ?? 'dev'),
       useTls: json['useTls'] as bool? ?? false,
     );
   }

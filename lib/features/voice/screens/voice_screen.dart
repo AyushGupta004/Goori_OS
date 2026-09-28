@@ -87,6 +87,19 @@ class _VoiceScreenState extends State<VoiceScreen>
 
     if (_speechService.isListening) {
       await _speechService.stopListening();
+      if (!mounted) return;
+      final settings = context.read<SettingsService>();
+      final autoSend = !settings.confirmBeforeSend;
+      final trimmed = _liveTranscript.trim();
+      if (trimmed.isNotEmpty) {
+        if (autoSend) {
+          _dispatchCommand(trimmed);
+        } else {
+          setState(() {
+            _stagedCommand = trimmed;
+          });
+        }
+      }
       return;
     }
 

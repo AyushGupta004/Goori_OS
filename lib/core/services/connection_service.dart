@@ -6,6 +6,7 @@ import '../errors/app_errors.dart';
 import '../models/models.dart';
 import '../network/config.dart';
 import '../network/windows_bridge_client.dart';
+import '../network/mock_windows_bridge_client.dart';
 import '../storage/secure_storage_service.dart';
 import 'authentication_service.dart';
 import 'discovery_service.dart';
@@ -226,13 +227,15 @@ class ConnectionService extends ChangeNotifier {
     }
 
     // Trigger resilience sequence: disconnect -> rediscover -> reconnect -> authenticate
-    await triggerNetworkTransitionReconnect();
+    await triggerNetworkTransitionReconnect(
+      mode: client is MockWindowsBridgeClient ? BridgeMode.mock : BridgeMode.dev,
+    );
   }
 
   /// Triggers full resilience sequence on network change:
   /// disconnect -> rediscover -> reconnect -> authenticate
   Future<StartupFlowResult> triggerNetworkTransitionReconnect({
-    BridgeMode mode = BridgeMode.mock,
+    BridgeMode mode = BridgeMode.dev,
     Duration discoveryTimeout = const Duration(seconds: 3),
   }) async {
     _isOrchestrating = true;
@@ -339,7 +342,7 @@ class ConnectionService extends ChangeNotifier {
   ///
   /// Emits [ConnectionState] changes throughout for the UI to observe.
   Future<StartupFlowResult> runStartupFlow({
-    BridgeMode mode = BridgeMode.mock,
+    BridgeMode mode = BridgeMode.dev,
     Duration discoveryTimeout = const Duration(seconds: 3),
   }) async {
     _isManualDisconnect = false;
@@ -441,7 +444,7 @@ class ConnectionService extends ChangeNotifier {
   Future<PairingResponse> pair(
     WindowsDevice device,
     String pinCode, {
-    BridgeMode mode = BridgeMode.mock,
+    BridgeMode mode = BridgeMode.dev,
   }) async {
     _activeDevice = device;
     _isManualDisconnect = false;
@@ -471,7 +474,7 @@ class ConnectionService extends ChangeNotifier {
 
   /// Attempts silent re-authentication on app launch when a token already exists.
   Future<StartupFlowResult> silentReauthenticate({
-    BridgeMode mode = BridgeMode.mock,
+    BridgeMode mode = BridgeMode.dev,
   }) async {
     final token = await secureStorage.getToken();
     if (token == null || token.isEmpty) {

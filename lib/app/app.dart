@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 
 import '../core/constants/app_constants.dart';
 import '../core/network/bridge_config_provider.dart';
-import '../core/network/config.dart';
 import '../core/services/services.dart';
 import '../core/storage/secure_storage_service.dart';
 import '../features/files/services/file_picker_service.dart';
@@ -59,22 +58,14 @@ class WindowsRemoteApp extends StatelessWidget {
     final localHistoryService =
         commandHistoryService ?? CommandHistoryService();
     final localSettingsService = settingsService ?? SettingsService();
-    final localConnectivityService = connectivityService ??
-        (localConfigProvider.config.mode == BridgeMode.mock
-            ? MockNetworkConnectivityService()
-            : RealNetworkConnectivityService());
-    final localSpeechService = speechRecognitionService ??
-        (localConfigProvider.config.mode == BridgeMode.mock
-            ? MockSpeechRecognitionService()
-            : NativeSpeechRecognitionService());
-    final localFilePickerService = filePickerService ??
-        (localConfigProvider.config.mode == BridgeMode.mock
-            ? MockFilePickerService()
-            : NativeFilePickerService());
-    final localImagePickerService = imagePickerService ??
-        (localConfigProvider.config.mode == BridgeMode.mock
-            ? MockImagePickerService()
-            : NativeImagePickerService());
+    final localConnectivityService =
+        connectivityService ?? RealNetworkConnectivityService();
+    final localSpeechService =
+        speechRecognitionService ?? NativeSpeechRecognitionService();
+    final localFilePickerService =
+        filePickerService ?? NativeFilePickerService();
+    final localImagePickerService =
+        imagePickerService ?? NativeImagePickerService();
 
     final localPairingService = pairingService ??
         PairingService(

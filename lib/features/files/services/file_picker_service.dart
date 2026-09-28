@@ -22,28 +22,40 @@ class NativeFilePickerService extends FilePickerService {
   @override
   Future<bool> checkStoragePermission() async {
     try {
-      // On Android 13+ (API 33+), file_picker uses SAF and does not require raw storage permission.
-      // However, we check Permission.storage or manageExternalStorage if needed.
-      final status = await Permission.storage.status;
-      _hasPermission = status.isGranted;
+      if (Platform.isAndroid) {
+        final status = await Permission.storage.status;
+        _hasPermission = status.isGranted;
+        // Modern Android uses SAF (Storage Access Framework) via FilePicker which needs no raw storage permission
+        _hasPermission = true;
+      } else {
+        _hasPermission = true;
+      }
       notifyListeners();
       return _hasPermission;
     } catch (e) {
       debugPrint('[NativeFilePickerService] checkStoragePermission error: $e');
-      return true; // Fallback to SAF
+      _hasPermission = true;
+      return true;
     }
   }
 
   @override
   Future<bool> requestStoragePermission() async {
     try {
-      final status = await Permission.storage.request();
-      _hasPermission = status.isGranted;
+      if (Platform.isAndroid) {
+        try {
+          await Permission.storage.request();
+        } catch (_) {}
+        // Storage permission is not required for system document picker (SAF) on modern Android
+        _hasPermission = true;
+      } else {
+        _hasPermission = true;
+      }
       notifyListeners();
-      return _hasPermission;
+      return true;
     } catch (e) {
       debugPrint('[NativeFilePickerService] requestStoragePermission error: $e');
-      _hasPermission = true; // Fallback to SAF on newer Android versions
+      _hasPermission = true;
       notifyListeners();
       return true;
     }
@@ -52,9 +64,17 @@ class NativeFilePickerService extends FilePickerService {
   @override
   Future<List<File>?> pickFiles({bool allowMultiple = true}) async {
     try {
-      final platformFiles = await FilePickerPlatform.instance.pickFiles(
-        type: FileType.any,
-      );
+      final List<PlatformFile> platformFiles;
+      if (allowMultiple) {
+        platformFiles = await FilePicker.pickFiles(
+          type: FileType.any,
+        );
+      } else {
+        final single = await FilePicker.pickFile(
+          type: FileType.any,
+        );
+        platformFiles = single != null ? [single] : [];
+      }
 
       if (platformFiles.isEmpty) {
         return null;

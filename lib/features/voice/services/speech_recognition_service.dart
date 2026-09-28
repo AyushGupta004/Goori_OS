@@ -112,6 +112,9 @@ class NativeSpeechRecognitionService extends SpeechRecognitionService {
           if (val == 'done' || val == 'notListening') {
             if (_state == SpeechRecognitionState.listening) {
               _state = SpeechRecognitionState.done;
+              if (_transcript.trim().isNotEmpty) {
+                _activeResultCallback?.call(_transcript.trim(), true);
+              }
               notifyListeners();
             }
           }
@@ -167,7 +170,7 @@ class NativeSpeechRecognitionService extends SpeechRecognitionService {
         listenOptions: stt.SpeechListenOptions(
           listenMode: stt.ListenMode.confirmation,
           partialResults: true,
-          cancelOnError: true,
+          cancelOnError: false,
         ),
       );
     } catch (e) {
@@ -184,6 +187,9 @@ class NativeSpeechRecognitionService extends SpeechRecognitionService {
       await _speechToText.stop();
     } catch (_) {}
     _state = SpeechRecognitionState.done;
+    if (_transcript.trim().isNotEmpty) {
+      _activeResultCallback?.call(_transcript.trim(), true);
+    }
     notifyListeners();
   }
 

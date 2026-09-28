@@ -31,7 +31,7 @@ class DiscoveryService extends ChangeNotifier {
   /// In [BridgeMode.mock], simulates discovering "My Windows PC".
   /// In live modes, queries local network via native NSD/mDNS.
   Future<void> startDiscovery({
-    BridgeMode mode = BridgeMode.mock,
+    BridgeMode mode = BridgeMode.dev,
     Duration timeout = const Duration(seconds: 4),
   }) async {
     if (_isScanning) return;

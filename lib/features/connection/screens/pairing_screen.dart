@@ -170,13 +170,41 @@ class _PairingScreenState extends State<PairingScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              device.name,
-                              style: AppTypography.sectionHeading.copyWith(
-                                color: palette.textPrimary,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    device.name,
+                                    style: AppTypography.sectionHeading.copyWith(
+                                      color: palette.textPrimary,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (device.id.startsWith('mock') ||
+                                    device.name.toUpperCase().contains('SIMULAT')) ...[
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: palette.border,
+                                      borderRadius: BorderRadius.circular(3),
+                                    ),
+                                    child: Text(
+                                      '(SIMULATED)',
+                                      style: AppTypography.mutedMetadata.copyWith(
+                                        color: palette.amberBadge,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                             const SizedBox(height: 2),
                             Text(

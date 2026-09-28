@@ -44,17 +44,21 @@ class NativeImagePickerService extends ImagePickerService {
   @override
   Future<bool> requestPhotosPermission() async {
     try {
-      // Android 13+ uses Permission.photos, while older versions use Permission.storage
-      PermissionStatus status;
-      if (await Permission.photos.isRestricted || await Permission.photos.status.isPermanentlyDenied) {
-        status = await Permission.storage.request();
+      if (Platform.isAndroid) {
+        // On Android 13+ (API 33+), image_picker uses the Android Photo Picker
+        // which operates via system intent and does not require runtime storage/photos permission.
+        try {
+          final status = await Permission.photos.request();
+          if (!status.isGranted && !status.isLimited) {
+            await Permission.storage.request();
+          }
+        } catch (_) {}
+        // Android system photo picker is always available to pick photos
+        _hasPhotosPermission = true;
       } else {
-        status = await Permission.photos.request();
-        if (!status.isGranted) {
-          status = await Permission.storage.request();
-        }
+        final status = await Permission.photos.request();
+        _hasPhotosPermission = status.isGranted || status.isLimited;
       }
-      _hasPhotosPermission = status.isGranted;
       notifyListeners();
       return _hasPhotosPermission;
     } catch (e) {

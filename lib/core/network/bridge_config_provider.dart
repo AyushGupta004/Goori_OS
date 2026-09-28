@@ -22,7 +22,7 @@ class BridgeConfigProvider extends ChangeNotifier {
             const BridgeConfig(
               host: '127.0.0.1',
               port: 7890,
-              mode: BridgeMode.mock,
+              mode: BridgeMode.dev,
             ),
         _activeClient = client ??
             BridgeClientFactory.createClient(
@@ -30,7 +30,7 @@ class BridgeConfigProvider extends ChangeNotifier {
                   const BridgeConfig(
                     host: '127.0.0.1',
                     port: 7890,
-                    mode: BridgeMode.mock,
+                    mode: BridgeMode.dev,
                   ),
             );
 
